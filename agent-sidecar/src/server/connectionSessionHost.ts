@@ -74,6 +74,10 @@ export class ConnectionSessionHost implements AgentSessionHost {
     this.send("assistant.text_delta", delta);
   }
 
+  handleSentence(sentence: { utteranceId: string; sentenceIndex: number; text: string }): void {
+    this.send("assistant.sentence", sentence);
+  }
+
   handleOverlayCommand(command: OverlayCommand): void {
     if (command.kind === "point_at") {
       const { kind: _kind, ...payload } = command;

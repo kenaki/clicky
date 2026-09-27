@@ -214,6 +214,7 @@ Do NOT update this file for minor edits, bug fixes, or changes that don't affect
 | `agent-sidecar/src/agent/agentSession.ts` | One streaming-input Agent SDK session; attributes SDK messages to the utterance in flight; interrupt and close. |
 | `agent-sidecar/src/agent/tools/screenAnnotationTools.ts` | In-process MCP server: `point_at`, `circle_region`, `take_screenshot`. |
 | `agent-sidecar/src/agent/tools/coordinateClamping.ts` | Pure clamping of tool coordinates to screenshot bounds. |
+| `agent-sidecar/src/agent/sentenceStreamSplitter.ts` | Pure streaming sentence splitter behind `assistant.sentence`, so speech starts on the first sentence. |
 | `agent-sidecar/src/agent/permissionRelay.ts` | `canUseTool` bridge; builds the spoken one-sentence permission question. |
 | `agent-sidecar/src/agent/voicePersonaPrompt.ts` | Clicky's voice persona, appended to the `claude_code` preset; tool-based pointing instructions. |
 | `agent-sidecar/src/protocol/messages.ts` | zod schemas for every wire message; the executable form of `docs/ipc-protocol.md`. |

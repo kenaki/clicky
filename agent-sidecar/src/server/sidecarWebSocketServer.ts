@@ -3,6 +3,7 @@
  * frame is validated, then routed to the agent session; every session event
  * goes back out through ConnectionSessionHost.
  */
+import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { AgentSession } from "../agent/agentSession.js";
 import { describeUnknownError, ProtocolError, SessionError, SidecarError } from "../protocol/errors.js";
@@ -22,7 +23,8 @@ export interface SidecarWebSocketServerOptions {
   port: number;
   sharedToken: string | null;
   sidecarVersion: string;
-  model: string | null;
+  model: string;
+  effort: EffortLevel;
   logger: Logger;
   screenshotTimeoutMs?: number;
   permissionTimeoutMs?: number;
@@ -114,7 +116,8 @@ class ClientConnection {
           projectDirectory: message.payload.projectDirectory,
           permissionMode: message.payload.permissionMode,
           resumeSessionId: message.payload.resumeSessionId,
-          model: this.serverOptions.model ?? undefined,
+          model: this.serverOptions.model,
+          effort: this.serverOptions.effort,
           host: this.sessionHost,
           logger: this.logger.child("session")
         });

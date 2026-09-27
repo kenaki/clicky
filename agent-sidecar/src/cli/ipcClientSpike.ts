@@ -40,7 +40,7 @@ function parseClientSpikeArguments(argv: string[]): ClientSpikeArguments {
     allowPositionals: true,
     strict: false
   });
-  const permissionMode = ((values["permission-mode"] as string | undefined) ?? "plan") as VoicePermissionMode;
+  const permissionMode = ((values["permission-mode"] as string | undefined) ?? "default") as VoicePermissionMode;
   return {
     port: values.port ? Number.parseInt(values.port as string, 10) : Number.parseInt(process.env.CLICKY_SIDECAR_PORT ?? String(DEFAULT_SIDECAR_PORT), 10),
     projectDirectory: (values.project as string | undefined) ?? process.env.CLICKY_PROJECT_DIRECTORY ?? process.cwd(),
@@ -115,6 +115,10 @@ async function main(): Promise<void> {
             process.stdout.write(`\n[first text after ${firstTextDeltaAtMs - utteranceSentAtMs} ms]\n`);
           }
           process.stdout.write(String(parsed.payload.text ?? ""));
+          return;
+
+        case "assistant.sentence":
+          process.stdout.write(`\n[sentence ${String(parsed.payload.sentenceIndex)} +${Date.now() - utteranceSentAtMs} ms] ${String(parsed.payload.text)}\n`);
           return;
 
         case "screenshot.request": {

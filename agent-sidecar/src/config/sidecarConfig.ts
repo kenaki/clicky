@@ -15,8 +15,10 @@ export interface SidecarConfig {
   projectDirectory: string;
   /** Optional shared secret the client must present in `client.hello`. */
   sharedToken: string | null;
-  /** Optional model override passed to the Agent SDK. */
-  model: string | null;
+  /** Model passed to the Agent SDK. */
+  model: string;
+  /** Thinking effort passed to the Agent SDK. Low is fastest, which voice wants. */
+  effort: AgentEffortLevel;
   /** Parent process id to watch; the sidecar exits when it disappears. */
   parentProcessId: number | null;
   /** True if an Anthropic API key is present in the environment. */
@@ -25,6 +27,11 @@ export interface SidecarConfig {
 }
 
 export const DEFAULT_SIDECAR_PORT = 47821;
+export const DEFAULT_AGENT_MODEL = "claude-opus-5-5";
+export const DEFAULT_AGENT_EFFORT: AgentEffortLevel = "low";
+
+/** Mirrors the SDK's EffortLevel so the config layer does not import the SDK. */
+export type AgentEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 const sidecarConfigSchema = z.object({
   port: z.number().int().min(1024).max(65535),
@@ -33,7 +40,8 @@ const sidecarConfigSchema = z.object({
     .min(1)
     .refine((value) => isAbsolute(value), { message: "projectDirectory must be an absolute path" }),
   sharedToken: z.string().min(1).nullable(),
-  model: z.string().min(1).nullable(),
+  model: z.string().min(1),
+  effort: z.enum(["low", "medium", "high", "xhigh", "max"]),
   parentProcessId: z.number().int().positive().nullable(),
   hasAnthropicApiKey: z.boolean(),
   logLevel: z.enum(["debug", "info", "warn", "error"])
@@ -72,6 +80,7 @@ export function loadSidecarConfig(input: LoadSidecarConfigInput): SidecarConfig 
       port: { type: "string" },
       project: { type: "string" },
       model: { type: "string" },
+      effort: { type: "string" },
       "parent-pid": { type: "string" },
       "log-level": { type: "string" }
     },
@@ -89,7 +98,8 @@ export function loadSidecarConfig(input: LoadSidecarConfigInput): SidecarConfig 
       emptyToNull(input.env.CLICKY_PROJECT_DIRECTORY) ??
       input.defaultProjectDirectory,
     sharedToken: emptyToNull(input.env.CLICKY_SIDECAR_TOKEN),
-    model: emptyToNull(values.model as string | undefined) ?? emptyToNull(input.env.CLICKY_AGENT_MODEL),
+    model: emptyToNull(values.model as string | undefined) ?? emptyToNull(input.env.CLICKY_AGENT_MODEL) ?? DEFAULT_AGENT_MODEL,
+    effort: emptyToNull(values.effort as string | undefined) ?? emptyToNull(input.env.CLICKY_AGENT_EFFORT) ?? DEFAULT_AGENT_EFFORT,
     parentProcessId: parseOptionalInteger(values["parent-pid"] as string | undefined, "--parent-pid"),
     hasAnthropicApiKey: emptyToNull(input.env.ANTHROPIC_API_KEY) !== null,
     logLevel: emptyToNull(values["log-level"] as string | undefined) ?? emptyToNull(input.env.CLICKY_SIDECAR_LOG_LEVEL) ?? "info"

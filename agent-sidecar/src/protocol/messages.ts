@@ -116,6 +116,8 @@ export interface OutgoingPayloads {
   "session.ready": { sessionId: string; projectDirectory: string; model: string };
   "agent.status": { utteranceId: string; phase: AgentPhase; toolName?: string | undefined };
   "assistant.text_delta": { utteranceId: string; text: string };
+  /** One complete sentence, as soon as the streamed text contains it. Speak these in order. */
+  "assistant.sentence": { utteranceId: string; sentenceIndex: number; text: string };
   "assistant.turn_complete": {
     utteranceId: string;
     /** The final assistant text for the turn, what TTS should read. Not the concatenation of every delta. */

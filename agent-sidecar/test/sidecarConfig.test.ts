@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SIDECAR_PORT, loadSidecarConfig, SidecarConfigError } from "../src/config/sidecarConfig.js";
+import { DEFAULT_AGENT_EFFORT, DEFAULT_AGENT_MODEL, DEFAULT_SIDECAR_PORT, loadSidecarConfig, SidecarConfigError } from "../src/config/sidecarConfig.js";
 
 const baseInput = { argv: [] as string[], env: {} as Record<string, string | undefined>, defaultProjectDirectory: "/tmp/project" };
 
@@ -10,6 +10,13 @@ describe("loadSidecarConfig", () => {
     expect(config.projectDirectory).toBe("/tmp/project");
     expect(config.sharedToken).toBeNull();
     expect(config.hasAnthropicApiKey).toBe(false);
+    expect(config.model).toBe(DEFAULT_AGENT_MODEL);
+    expect(config.effort).toBe(DEFAULT_AGENT_EFFORT);
+  });
+
+  it("accepts an effort override and rejects an unknown one", () => {
+    expect(loadSidecarConfig({ ...baseInput, argv: ["--effort", "medium"] }).effort).toBe("medium");
+    expect(() => loadSidecarConfig({ ...baseInput, env: { CLICKY_AGENT_EFFORT: "turbo" } })).toThrowError(SidecarConfigError);
   });
 
   it("prefers command-line arguments over environment variables", () => {

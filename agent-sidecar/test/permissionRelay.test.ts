@@ -42,6 +42,14 @@ describe("createPermissionRelay", () => {
     expect(result.message).toContain("timed out");
   });
 
+  it("allows the screen annotation tools without asking the host", async () => {
+    let hostCalled = false;
+    const relay = createPermissionRelay({ requestPermission: async () => { hostCalled = true; return { decision: "deny" }; } }, silentLogger);
+    const result = await relay("mcp__clicky_screen__point_at", { x: 1, y: 2 }, abortOptions);
+    expect(result?.behavior).toBe("allow");
+    expect(hostCalled).toBe(false);
+  });
+
   it("denies immediately when the request was already aborted", async () => {
     const abortController = new AbortController();
     abortController.abort();

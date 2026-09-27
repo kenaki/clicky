@@ -68,8 +68,9 @@ conversion to display points and AppKit coordinates.
 | `sidecar.hello` | `{ sidecarVersion, protocolVersion }` | Reply to `client.hello`. |
 | `session.ready` | `{ sessionId, projectDirectory }` | The SDK init message arrived. `sessionId` is what `claude --resume` takes. |
 | `agent.status` | `{ utteranceId, phase, toolName? }` | `phase` is `thinking`, `using_tool`, or `idle`. Drives the spinner and progress narration. |
-| `assistant.text_delta` | `{ utteranceId, text }` | Incremental text as Claude writes it. |
-| `assistant.turn_complete` | `{ utteranceId, spokenText, sessionId, durationMs, costUsd? }` | `spokenText` is the full final assistant text for this turn, what TTS should read. |
+| `assistant.text_delta` | `{ utteranceId, text }` | Incremental text as Claude writes it. For display. |
+| `assistant.sentence` | `{ utteranceId, sentenceIndex, text }` | One complete sentence, emitted the moment the streamed text contains it. Send each to TTS as it arrives and play them in order. Includes anything Claude says before or between tool calls, which is the progress narration. |
+| `assistant.turn_complete` | `{ utteranceId, spokenText, sessionId, durationMs, costUsd? }` | `spokenText` is the final assistant text, for the transcript. Do not speak it again if the app already spoke the `assistant.sentence` stream. The last sentence always arrives before this message. |
 | `overlay.point_at` | `{ x, y, label, screenIndex }` | Fly the cursor to this point. |
 | `overlay.circle_region` | `{ x, y, width, height, label, screenIndex }` | Draw a circle or rounded highlight around this rectangle. |
 | `overlay.clear` | `{}` | Remove annotations. |
@@ -84,7 +85,8 @@ conversion to display points and AppKit coordinates.
 ```
 app → user.utterance
 sidecar → agent.status {thinking}
-sidecar → assistant.text_delta ×N
+sidecar → assistant.text_delta ×N     (interleaved with)
+sidecar → assistant.sentence ×M       (app starts speaking on the first one)
 sidecar → overlay.point_at
 sidecar → assistant.turn_complete
 ```

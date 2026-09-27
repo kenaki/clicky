@@ -45,13 +45,13 @@ is Claude, reached through the Claude Agent SDK.
 4. The app sends `user.utterance` with the transcript and screenshots to the sidecar over the WebSocket.
 5. The sidecar feeds a user message with text and image blocks into the streaming-input Agent SDK query.
 6. Claude works. Along the way it may:
-   - emit text, which the sidecar forwards as `assistant.text_delta`;
+   - emit text, which the sidecar forwards as `assistant.text_delta` and, once each sentence is complete, as `assistant.sentence`;
    - call `point_at` or `circle_region`, which the sidecar forwards as `overlay.*` messages;
    - call `take_screenshot`, which the sidecar turns into a `screenshot.request` and blocks on the reply;
    - call a built-in tool like `Edit` or `Bash` in Ken's project, which either runs under the allow rules or goes to `canUseTool`, which the sidecar forwards as `permission.request`;
    - the app speaks the permission question, hears yes or no, and replies `permission.decision`.
 7. The turn ends. The sidecar sends `assistant.turn_complete` with the spoken text and the session id.
-8. The app sends the spoken text to the Spark speech endpoint, sentence by sentence, and plays it.
+8. The app sends each `assistant.sentence` to the Spark speech endpoint as it arrives and plays them in order, so speech starts on the first sentence while Claude is still writing.
 9. Later, `claude --resume <session id>` in a terminal picks up the same conversation.
 
 ## Why this shape
@@ -91,6 +91,7 @@ tools keep exactly this convention so the existing scaling code stays.
 | Release key to transcript back from Spark | < 500 ms |
 | Screenshot capture, all displays | < 150 ms |
 | First text delta from Claude | < 2 s |
+| First complete sentence, speech can start | < 3 s |
 | Spark TTS time-to-first-audio per sentence | < 300 ms |
 | Tool-using agent turn | seconds to minutes. Needs progress narration, not a spinner. |
 

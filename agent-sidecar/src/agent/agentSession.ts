@@ -7,7 +7,7 @@
  * `AgentSessionHost` interface, so the same session runs under the WebSocket
  * server and under the console spike.
  */
-import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, type EffortLevel, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { describeUnknownError, SessionError } from "../protocol/errors.js";
 import type {
   AgentPhase,
@@ -22,6 +22,7 @@ import type { Logger } from "../logging/logger.js";
 import { AsyncPushQueue } from "../util/asyncPushQueue.js";
 import { createDeferred, type Deferred } from "../util/deferred.js";
 import { createPermissionRelay } from "./permissionRelay.js";
+import { SentenceStreamSplitter } from "./sentenceStreamSplitter.js";
 import {
   createScreenAnnotationToolServer,
   SCREEN_ANNOTATION_ALLOWED_TOOLS,
@@ -53,6 +54,8 @@ export interface AgentSessionHost {
   handleSessionReady(info: SessionReadyInfo): void;
   handleStatus(status: { utteranceId: string; phase: AgentPhase; toolName?: string | undefined }): void;
   handleTextDelta(delta: { utteranceId: string; text: string }): void;
+  /** Fired as soon as a full sentence has streamed, including narration before and between tool calls. */
+  handleSentence(sentence: { utteranceId: string; sentenceIndex: number; text: string }): void;
   handleOverlayCommand(command: OverlayCommand): void;
   requestScreenshots(): Promise<Screenshot[]>;
   requestPermission(request: PermissionRequest): Promise<PermissionDecision>;
@@ -64,7 +67,8 @@ export interface AgentSessionOptions {
   projectDirectory: string;
   permissionMode: VoicePermissionMode;
   resumeSessionId?: string | undefined;
-  model?: string | undefined;
+  model: string;
+  effort: EffortLevel;
   host: AgentSessionHost;
   logger: Logger;
 }
@@ -82,6 +86,8 @@ interface TurnInFlight {
   startedAtMs: number;
   finished: Deferred<void>;
   interruptRequested: boolean;
+  sentenceSplitter: SentenceStreamSplitter;
+  sentenceCount: number;
 }
 
 export class AgentSession {
@@ -129,7 +135,7 @@ export class AgentSession {
       this.logger.child("tools")
     );
 
-    const { resumeSessionId, model } = this.options;
+    const { resumeSessionId } = this.options;
 
     this.sdkQuery = query({
       prompt: this.inputQueue,
@@ -142,10 +148,11 @@ export class AgentSession {
         permissionMode: this.options.permissionMode,
         canUseTool: createPermissionRelay(this.options.host, this.logger.child("permissions")),
         includePartialMessages: true,
+        model: this.options.model,
+        effort: this.options.effort,
         abortController: this.abortController,
         stderr: (line) => this.logger.debug("claude stderr", { line: line.trimEnd() }),
-        ...(resumeSessionId !== undefined ? { resume: resumeSessionId } : {}),
-        ...(model !== undefined ? { model } : {})
+        ...(resumeSessionId !== undefined ? { resume: resumeSessionId } : {})
       }
     });
 
@@ -153,6 +160,8 @@ export class AgentSession {
     this.logger.info("session starting", {
       projectDirectory: this.options.projectDirectory,
       permissionMode: this.options.permissionMode,
+      model: this.options.model,
+      effort: this.options.effort,
       resumeSessionId: resumeSessionId ?? null
     });
   }
@@ -173,7 +182,9 @@ export class AgentSession {
       utteranceId: input.utteranceId,
       startedAtMs: Date.now(),
       finished: createDeferred<void>(),
-      interruptRequested: false
+      interruptRequested: false,
+      sentenceSplitter: new SentenceStreamSplitter(),
+      sentenceCount: 0
     };
 
     this.inputQueue.push({
@@ -231,6 +242,12 @@ export class AgentSession {
     if (this.terminalFailureMessage !== null) {
       throw new SessionError("session_failed", `the agent session has ended: ${this.terminalFailureMessage}`);
     }
+  }
+
+  private emitSentence(turn: TurnInFlight, text: string): void {
+    const sentenceIndex = turn.sentenceCount;
+    turn.sentenceCount += 1;
+    this.options.host.handleSentence({ utteranceId: turn.utteranceId, sentenceIndex, text });
   }
 
   private rememberScreenshotBounds(screenshots: Screenshot[]): void {
@@ -303,6 +320,16 @@ export class AgentSession {
         const { event } = message;
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           this.options.host.handleTextDelta({ utteranceId: turn.utteranceId, text: event.delta.text });
+          for (const sentence of turn.sentenceSplitter.feed(event.delta.text)) {
+            this.emitSentence(turn, sentence);
+          }
+        } else if (event.type === "content_block_stop") {
+          // A text block ending (usually because a tool call follows) is a sentence
+          // boundary even without trailing punctuation or whitespace.
+          const trailingSentence = turn.sentenceSplitter.flush();
+          if (trailingSentence !== null) {
+            this.emitSentence(turn, trailingSentence);
+          }
         }
         return;
       }
@@ -352,6 +379,10 @@ export class AgentSession {
 
     const durationMs = Date.now() - turn.startedAtMs;
     if (outcome.kind === "completed" && !turn.interruptRequested) {
+      const trailingSentence = turn.sentenceSplitter.flush();
+      if (trailingSentence !== null) {
+        this.emitSentence(turn, trailingSentence);
+      }
       this.logger.info("turn complete", { utteranceId: turn.utteranceId, durationMs, costUsd: outcome.costUsd });
       this.options.host.handleTurnComplete({
         utteranceId: turn.utteranceId,

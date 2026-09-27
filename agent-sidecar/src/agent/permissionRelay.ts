@@ -9,6 +9,9 @@ import { randomUUID } from "node:crypto";
 import { describeUnknownError } from "../protocol/errors.js";
 import type { PermissionDecision, PermissionRequest } from "../protocol/sharedShapes.js";
 import type { Logger } from "../logging/logger.js";
+import { SCREEN_ANNOTATION_SERVER_NAME } from "./tools/screenAnnotationTools.js";
+
+const SCREEN_ANNOTATION_TOOL_PREFIX = `mcp__${SCREEN_ANNOTATION_SERVER_NAME}__`;
 
 export interface PermissionRelayHost {
   requestPermission(request: PermissionRequest): Promise<PermissionDecision>;
@@ -63,6 +66,13 @@ export function describeToolUseForSpeech(toolName: string, input: Record<string,
 
 export function createPermissionRelay(host: PermissionRelayHost, logger: Logger): CanUseTool {
   return async (toolName, input, options) => {
+    // Pointing and circling only draw on our own overlay. Plan mode routes tools it
+    // cannot prove harmless to this callback even when an allow rule matches, so
+    // approve them here rather than ever asking the user "may I point?".
+    if (toolName.startsWith(SCREEN_ANNOTATION_TOOL_PREFIX)) {
+      return { behavior: "allow", updatedInput: input };
+    }
+
     const request: PermissionRequest = {
       permissionRequestId: randomUUID(),
       toolName,

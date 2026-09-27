@@ -67,14 +67,14 @@ and 2 can be started today with stand-ins on the Mac to build the harness, then 
 
 | Spike | Status | Date | Result |
 |---|---|---|---|
-| 0 | first run passed | 2026-09-27 | Question "where is the search bar" on a 1280x720 iTerm screenshot. Claude called `point_at` at (1111, 9) labeled "spotlight search", in bounds and on the right element, about 5 s after send, then spoke a two-sentence answer at about 12 s. Model claude-opus-5-5 via the Claude Code login; SDK cost estimate $0.35. Session `0e446e52-172c-4a17-b5cc-e8d6968e061a`. Tool-call rate 1 of 1 so far; the 8-of-10 criterion still needs more prompts. The 12 s to speech is well over the 2 s target and is the first latency finding for Spike 8. |
+| 0 | passing; three runs | 2026-09-27 | Same question and screenshot each time. Run 1 (effort default, end-of-turn speech): point_at (1111, 9) "spotlight search", speech at about 12 s. Run 2 (effort low): first text 4.0 s, but plan mode sent point_at to the permission prompt and the splitter glued two text blocks together. Run 3 (effort low, default mode, block-boundary and no-initials fixes): first text 2.5 s, first sentence spoken at 3.2 s, point_at at 3.8 s at the same (1111, 9), total 6.4 s. Pointing 3 of 3 with identical coordinates. Sessions resume from the terminal. Next latency levers: smaller screenshot, fewer global MCP servers, warm session in the app. |
 | 1 | not started | | |
 | 2 | not started | | |
 | 3 | transport verified; agent round trip pending | 2026-09-27 | Hello handshake, second-client refusal, malformed-frame handling, and session-not-started guard pass against the live server with no API call. Full round trip with `npm run spike:ipc-client` needs a signed-in Claude Code login. |
 | 4 | not started | | |
 | 5 | not started | | |
 | 6 | not started | | |
-| 7 | not started | | |
+| 7 | narration built in the sidecar; app playback and barge-in pending | 2026-09-27 | `assistant.sentence` streams each completed sentence, including text before and between tool calls; the spike speaks them in order through `say`. Effort default set to low. |
 | 8 | not started | | |
 | 9 | not started | | |
 
