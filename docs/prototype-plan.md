@@ -67,7 +67,7 @@ and 2 can be started today with stand-ins on the Mac to build the harness, then 
 
 | Spike | Status | Date | Result |
 |---|---|---|---|
-| 0 | code written, typechecks, not yet run | 2026-09-27 | Runs on the Claude Code login. `npm run check-auth` reached the login but the terminal CLI was signed out; after `claude auth login`, run `npm run spike:tracer-bullet -- --question "where is the search bar"`. |
+| 0 | first run passed | 2026-09-27 | Question "where is the search bar" on a 1280x720 iTerm screenshot. Claude called `point_at` at (1111, 9) labeled "spotlight search", in bounds and on the right element, about 5 s after send, then spoke a two-sentence answer at about 12 s. Model claude-opus-5-5 via the Claude Code login; SDK cost estimate $0.35. Session `0e446e52-172c-4a17-b5cc-e8d6968e061a`. Tool-call rate 1 of 1 so far; the 8-of-10 criterion still needs more prompts. The 12 s to speech is well over the 2 s target and is the first latency finding for Spike 8. |
 | 1 | not started | | |
 | 2 | not started | | |
 | 3 | transport verified; agent round trip pending | 2026-09-27 | Hello handshake, second-client refusal, malformed-frame handling, and session-not-started guard pass against the live server with no API call. Full round trip with `npm run spike:ipc-client` needs a signed-in Claude Code login. |
