@@ -25,6 +25,7 @@ export interface SidecarWebSocketServerOptions {
   sidecarVersion: string;
   model: string;
   effort: EffortLevel;
+  persistSessions: boolean;
   logger: Logger;
   screenshotTimeoutMs?: number;
   permissionTimeoutMs?: number;
@@ -118,6 +119,7 @@ class ClientConnection {
           resumeSessionId: message.payload.resumeSessionId,
           model: this.serverOptions.model,
           effort: this.serverOptions.effort,
+          persistSessions: this.serverOptions.persistSessions,
           host: this.sessionHost,
           logger: this.logger.child("session")
         });

@@ -69,6 +69,8 @@ export interface AgentSessionOptions {
   resumeSessionId?: string | undefined;
   model: string;
   effort: EffortLevel;
+  /** False keeps the transcript, and therefore every screenshot, off disk; see docs/privacy.md. */
+  persistSessions: boolean;
   host: AgentSessionHost;
   logger: Logger;
 }
@@ -150,6 +152,7 @@ export class AgentSession {
         includePartialMessages: true,
         model: this.options.model,
         effort: this.options.effort,
+        persistSession: this.options.persistSessions,
         abortController: this.abortController,
         stderr: (line) => this.logger.debug("claude stderr", { line: line.trimEnd() }),
         ...(resumeSessionId !== undefined ? { resume: resumeSessionId } : {})
@@ -162,6 +165,7 @@ export class AgentSession {
       permissionMode: this.options.permissionMode,
       model: this.options.model,
       effort: this.options.effort,
+      persistSessions: this.options.persistSessions,
       resumeSessionId: resumeSessionId ?? null
     });
   }

@@ -38,6 +38,12 @@ describe("loadSidecarConfig", () => {
     expect(() => loadSidecarConfig({ ...baseInput, argv: ["--port", "abc"] })).toThrowError(/--port must be an integer/);
   });
 
+  it("reads the session persistence switch", () => {
+    expect(loadSidecarConfig(baseInput).persistSessions).toBe(true);
+    expect(loadSidecarConfig({ ...baseInput, env: { CLICKY_PERSIST_SESSIONS: "false" } }).persistSessions).toBe(false);
+    expect(() => loadSidecarConfig({ ...baseInput, env: { CLICKY_PERSIST_SESSIONS: "maybe" } })).toThrowError(/boolean/);
+  });
+
   it("treats an empty token as absent", () => {
     expect(loadSidecarConfig({ ...baseInput, env: { CLICKY_SIDECAR_TOKEN: "   " } }).sharedToken).toBeNull();
   });

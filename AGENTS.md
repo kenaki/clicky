@@ -22,7 +22,8 @@ brain and voice services:
 
 Read `docs/README.md` first. `docs/architecture.md` has the component map and the seams in the
 Swift code; `docs/prototype-plan.md` is the live status of the spikes; `docs/ipc-protocol.md` is
-the app↔sidecar contract; `docs/conventions.md` adds the rules for the sidecar and the protocol.
+the app↔sidecar contract; `docs/conventions.md` adds the rules for the sidecar and the protocol;
+`docs/privacy.md` says exactly what is captured and where it lands, keep it accurate.
 The upstream sections below still describe the Swift app accurately until the seams are cut.
 
 ### agent-sidecar quick reference
@@ -207,6 +208,7 @@ Do NOT update this file for minor edits, bug fixes, or changes that don't affect
 | `agent-sidecar/src/cli/checkAuth.ts` | Makes one tiny request and reports the credential source (`none` means the Claude Code login). |
 | `agent-sidecar/src/cli/ipcClientSpike.ts` | Spike 3 throwaway client that drives the WebSocket server like the Swift app will. |
 | `agent-sidecar/src/cli/tracerBulletSpike.ts` | Spike 0. Screenshot + typed question into a real Agent SDK session from the terminal; prints tool calls, timings, and the session id for `claude --resume`. |
+| `agent-sidecar/src/cli/privacyInventory.ts` | `npm run privacy:list` and `privacy:clean`: every local copy of a screenshot, listed or deleted. |
 | `agent-sidecar/src/cli/macScreenCapture.ts` | `screencapture` + `sips` helpers for the spike; 1280 px max like upstream. |
 | `agent-sidecar/src/server/sidecarWebSocketServer.ts` | Localhost WebSocket transport, single client, hello handshake, frame routing. |
 | `agent-sidecar/src/server/connectionSessionHost.ts` | Adapts session events to wire messages; parks screenshot and permission requests until the app replies. |

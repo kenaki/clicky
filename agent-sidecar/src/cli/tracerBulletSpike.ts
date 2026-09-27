@@ -45,6 +45,8 @@ interface SpikeArguments {
   screenshotPath: string | null;
   shouldSpeak: boolean;
   runOnce: boolean;
+  /** --ephemeral: keep this session, and its screenshot, off disk. */
+  ephemeral: boolean;
   resumeSessionId: string | null;
   permissionMode: VoicePermissionMode;
 }
@@ -57,6 +59,7 @@ function parseSpikeArguments(argv: string[]): SpikeArguments {
       screenshot: { type: "string" },
       speak: { type: "boolean", default: false },
       once: { type: "boolean", default: false },
+      ephemeral: { type: "boolean", default: false },
       resume: { type: "string" },
       "permission-mode": { type: "string" }
     },
@@ -72,6 +75,7 @@ function parseSpikeArguments(argv: string[]): SpikeArguments {
     screenshotPath: (values.screenshot as string | undefined) ?? null,
     shouldSpeak: Boolean(values.speak),
     runOnce: Boolean(values.once),
+    ephemeral: Boolean(values.ephemeral),
     resumeSessionId: (values.resume as string | undefined) ?? null,
     permissionMode: permissionModeValue
   };
@@ -186,7 +190,11 @@ async function main(): Promise<void> {
   assertProjectDirectoryExists(config.projectDirectory);
   logCredentialSource(config.hasAnthropicApiKey, logger);
 
+  const persistSessions = spikeArguments.ephemeral ? false : config.persistSessions;
   process.stdout.write(`project: ${config.projectDirectory}\nmodel: ${config.model}  effort: ${config.effort}  permission mode: ${spikeArguments.permissionMode}\n`);
+  process.stdout.write(persistSessions
+    ? "session transcript WILL be written to ~/.claude/projects (embeds the screenshot; enables claude --resume). Pass --ephemeral to keep it off disk.\n"
+    : "ephemeral session: nothing written to disk, claude --resume will not work for it.\n");
   process.stdout.write(spikeArguments.screenshotPath ? `screenshot: ${spikeArguments.screenshotPath}\n` : "capturing main display...\n");
   const screenshot = spikeArguments.screenshotPath
     ? await loadScreenshotFromFile(spikeArguments.screenshotPath)
@@ -202,6 +210,7 @@ async function main(): Promise<void> {
     resumeSessionId: spikeArguments.resumeSessionId ?? undefined,
     model: config.model,
     effort: config.effort,
+    persistSessions,
     host,
     logger: logger.child("session")
   });
@@ -246,7 +255,7 @@ async function main(): Promise<void> {
   await session.close();
   readline.close();
   process.stdout.write(`\nsession id: ${sessionId ?? "unknown"}\n`);
-  if (sessionId) {
+  if (sessionId && persistSessions) {
     process.stdout.write(`continue it in a terminal with:\n  cd ${config.projectDirectory} && claude --resume ${sessionId}\n`);
   }
 }

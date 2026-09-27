@@ -11,6 +11,7 @@ Read in this order:
 | [architecture.md](architecture.md) | What the four components are, how a voice turn flows through them, and where each seam is in the existing Swift code. |
 | [prototype-plan.md](prototype-plan.md) | Every way we can validate the plan before committing to it, as ordered spikes with pass/fail criteria. Status is tracked here. |
 | [ipc-protocol.md](ipc-protocol.md) | The message contract between the Swift app and the sidecar. Change this doc, the zod schema, and the Swift Codable together. |
+| [privacy.md](privacy.md) | Exactly what is captured, when, where it goes, where it lands on disk, and the commands that list and wipe it. |
 | [conventions.md](conventions.md) | The engineering rules for this repo: module boundaries, naming, validation at boundaries, testing, docs upkeep. |
 | [decisions/](decisions/) | Architecture Decision Records. One file per decision, never edited after acceptance, superseded by a new one instead. |
 

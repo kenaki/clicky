@@ -76,6 +76,19 @@ version it does not support.
 - `docs/architecture.md` is updated when a component or a seam changes.
 - Root `AGENTS.md` keeps its self-update rules and gets a new row in Key Files for every new source file.
 
+## Privacy rules
+
+- A screen capture is one still frame, taken when the user acts or when the agent asks after
+  announcing it. Never a stream.
+- Every capture is visible and audible: the spikes print a notice and keep the shutter sound;
+  the app must show the indicator described in `docs/privacy.md`. No setting may make a capture
+  both silent and invisible.
+- Nothing this repo writes to disk keeps a screenshot: temp files are deleted before the code
+  continues, and image payloads are logged by size only. What Claude Code itself persists is
+  documented in `docs/privacy.md` and controlled by `CLICKY_PERSIST_SESSIONS`.
+- When a capture or storage path changes, update `docs/privacy.md` in the same commit.
+- Never run speech or capture on the user's machine from an assistant session without asking.
+
 ## Secrets and git
 
 - No API keys, tokens, or hostnames of Ken's machines in the repo. `.env` is ignored; `.env.example` documents the shape.

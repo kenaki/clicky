@@ -23,6 +23,12 @@ export interface SidecarConfig {
   parentProcessId: number | null;
   /** True if an Anthropic API key is present in the environment. */
   hasAnthropicApiKey: boolean;
+  /**
+   * Whether the Agent SDK writes session transcripts to ~/.claude/projects.
+   * Transcripts embed every screenshot as base64. True enables `claude --resume`
+   * on voice sessions; false keeps nothing on disk. See docs/privacy.md.
+   */
+  persistSessions: boolean;
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
@@ -44,6 +50,7 @@ const sidecarConfigSchema = z.object({
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]),
   parentProcessId: z.number().int().positive().nullable(),
   hasAnthropicApiKey: z.boolean(),
+  persistSessions: z.boolean(),
   logLevel: z.enum(["debug", "info", "warn", "error"])
 });
 
@@ -65,6 +72,14 @@ function parseOptionalInteger(rawValue: string | undefined, fieldName: string): 
     throw new SidecarConfigError(`${fieldName} must be an integer, got "${rawValue}"`);
   }
   return parsedValue;
+}
+
+function parseBooleanFlag(rawValue: string | undefined, defaultValue: boolean): boolean {
+  const normalized = rawValue?.trim().toLowerCase();
+  if (normalized === undefined || normalized === "") return defaultValue;
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  throw new SidecarConfigError(`expected a boolean, got "${rawValue}"`);
 }
 
 function emptyToNull(rawValue: string | undefined): string | null {
@@ -102,6 +117,7 @@ export function loadSidecarConfig(input: LoadSidecarConfigInput): SidecarConfig 
     effort: emptyToNull(values.effort as string | undefined) ?? emptyToNull(input.env.CLICKY_AGENT_EFFORT) ?? DEFAULT_AGENT_EFFORT,
     parentProcessId: parseOptionalInteger(values["parent-pid"] as string | undefined, "--parent-pid"),
     hasAnthropicApiKey: emptyToNull(input.env.ANTHROPIC_API_KEY) !== null,
+    persistSessions: parseBooleanFlag(input.env.CLICKY_PERSIST_SESSIONS, true),
     logLevel: emptyToNull(values["log-level"] as string | undefined) ?? emptyToNull(input.env.CLICKY_SIDECAR_LOG_LEVEL) ?? "info"
   };
 

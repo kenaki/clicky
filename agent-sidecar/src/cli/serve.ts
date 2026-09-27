@@ -40,6 +40,7 @@ async function main(): Promise<void> {
     sidecarVersion: readSidecarVersion(),
     model: config.model,
     effort: config.effort,
+    persistSessions: config.persistSessions,
     logger: logger.child("server")
   });
 
@@ -65,7 +66,7 @@ async function main(): Promise<void> {
   }
 
   const { port } = await server.start();
-  logger.info("ready", { port, projectDirectory: config.projectDirectory, model: config.model, effort: config.effort, tokenRequired: config.sharedToken !== null });
+  logger.info("ready", { port, projectDirectory: config.projectDirectory, model: config.model, effort: config.effort, persistSessions: config.persistSessions, tokenRequired: config.sharedToken !== null });
   process.stdout.write(`listening on ws://127.0.0.1:${port}\n`);
 }
 

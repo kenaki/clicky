@@ -77,6 +77,11 @@ These are the exact places the new pieces attach. Line numbers are from the upst
 | Interruption | `leanring-buddy/CompanionManager.swift:494` | A new hotkey press cancels the response task and stops playback. Extend to send `user.interrupt`. |
 | Overlay | `leanring-buddy/OverlayWindow.swift` | Has a triangle that flies to a point. Needs a new circle/highlight gesture. |
 
+## Privacy
+
+One still frame per turn, never a stream. Where it goes and where it lands on disk, and how to
+wipe it, is in [privacy.md](privacy.md). Every capture is visible; agent-initiated ones are announced.
+
 ## Coordinate convention
 
 Screenshots are sent to Claude at their captured pixel size (max dimension 1280) with a label
