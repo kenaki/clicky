@@ -72,7 +72,7 @@ version it does not support.
 ## Documentation upkeep
 
 - Architectural decisions get an ADR in `docs/decisions/` before the code lands. ADRs are immutable once accepted; supersede, do not edit.
-- `docs/prototype-plan.md` is a living status board. Update the status column when a spike runs, with the date and the measured numbers.
+- `.claude/plans/active/agent-sidecar/plan.md` is the living status board. Update its Status table and Changelog when a chunk runs, one line, ≤25 words, numbers not narrative.
 - `docs/architecture.md` is updated when a component or a seam changes.
 - Root `AGENTS.md` keeps its self-update rules and gets a new row in Key Files for every new source file.
 

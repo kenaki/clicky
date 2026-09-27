@@ -21,10 +21,61 @@ brain and voice services:
   endpoints, replacing AssemblyAI and ElevenLabs.
 
 Read `docs/README.md` first. `docs/architecture.md` has the component map and the seams in the
-Swift code; `docs/prototype-plan.md` is the live status of the spikes; `docs/ipc-protocol.md` is
-the app↔sidecar contract; `docs/conventions.md` adds the rules for the sidecar and the protocol;
-`docs/privacy.md` says exactly what is captured and where it lands, keep it accurate.
+Swift code; `docs/ipc-protocol.md` is the app↔sidecar contract; `docs/conventions.md` adds the rules
+for the sidecar and the protocol; `docs/privacy.md` says exactly what is captured and where it lands,
+keep it accurate. The feature plan and its live status are `.claude/plans/active/agent-sidecar/`
+(`brief.md`, `plan.md`), in Ken's workflow layout (`~/claude-workflow`).
 The upstream sections below still describe the Swift app accurately until the seams are cut.
+
+### Commands
+Install: `cd agent-sidecar && npm install` | Type check: `npm run typecheck` | Test: `npm test` | All gates: `npm run typecheck && npm test` (run before handing off a change) | Start: `npm run serve -- --project /abs/path` | Auth: `npm run check-auth` | Privacy: `npm run privacy:list` | Swift: open `leanring-buddy.xcodeproj`, Cmd+R (never `xcodebuild` from a terminal, it resets TCC permissions)
+
+### The weird thing
+- The Agent SDK runs on the *terminal* Claude Code login, separate from the desktop app's. `claude auth status` says `loggedIn: false` until `claude auth login`. No API key, ever.
+- Claude Code embeds every screenshot in the session transcript under `~/.claude/projects/`. `docs/privacy.md` maps it; `npm run privacy:list` shows it; `CLICKY_PERSIST_SESSIONS=false` stops it and disables `--resume`.
+- Plan mode routes non-read-only MCP tools to the permission prompt despite allow rules. The annotation tools are force-allowed in `agent-sidecar/src/agent/permissionRelay.ts`; voice sessions use mode `default`.
+- The Swift target directory is `leanring-buddy/` (upstream typo, intentional). `CLAUDE.md` is a symlink to this file.
+- In a Claude session, parallel shell calls share one working directory; scripts use absolute paths.
+- Upstream gitignored `.claude/`. It is now `.claude/*` with `plans/` and `launch.json` tracked.
+
+### Never touch without asking
+- `agent-sidecar/.env` and anything matching `.env*`, `*.pem`, `*.key`. Never print a secret.
+- `~/.claude/settings.json`, hooks, permissions, or anything under `~/.claude/` (global rule).
+- `leanring-buddy.xcodeproj/project.pbxproj` beyond adding the files a chunk names.
+- The `upstream` remote (farzaa/clicky) and the fork's `main`.
+- Anything that captures the screen or plays audio on Ken's Mac from an assistant session.
+
+### Architectural decisions
+- Agent SDK in a Node sidecar, not in-process — Swift cannot embed the SDK. ADR 0001.
+- TypeScript sidecar — fuller in-process tool results than Python. ADR 0002.
+- Pointing via tools, not `[POINT:]` tags — typed, mid-turn, several per turn. ADR 0003. ⚠ accuracy vs upstream unmeasured (chunk 9).
+- Spark speech behind OpenAI-compatible endpoints — model swaps never touch the app. ADR 0004.
+- Localhost WebSocket, versioned JSON envelope — `docs/ipc-protocol.md`. ADR 0005.
+- Claude Code login, never an API key — one bill. ADR 0001 amendment.
+- `claude-opus-5-5` at effort `low` for voice turns, sentence-streamed speech — 3.2 s to first speech measured.
+
+### Out of scope
+- Clicking or typing on the Mac. Annotate only in v1.
+- Wake word or continuous listening. Push-to-talk stays.
+- A local LLM. Claude stays the brain.
+- Offering this to other users. It runs on Ken's own login.
+
+### Stack & doc references
+Verify against live docs before implementing; confirm the **installed** version, not the latest.
+- Claude Agent SDK (`@anthropic-ai/claude-agent-sdk` 0.3.283) — docs `https://code.claude.com/docs/en/agent-sdk/`; the installed `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts` is the ground truth when the docs page truncates.
+  - ⚠️ `canUseTool` options require `toolUseID` and `requestId` (`sdk.d.ts:213`); `effort` is `low|medium|high|xhigh|max` (`sdk.d.ts:688`); `persistSession` is TypeScript-only.
+- zod (`zod` 4.6.5, the SDK's peer) — `tool()` takes a raw zod shape.
+- ws (`ws` 8.18) — ESM named exports `WebSocketServer`, `WebSocket`.
+- Node 24 — `process.loadEnvFile`, global `WebSocket` client, `util.parseArgs`.
+- macOS: ScreenCaptureKit `SCScreenshotManager.captureImage` (14.2+); Sparkle 2.9; PostHog 3.47 (`Package.resolved`).
+
+### Git commits
+- Claude may commit and push to feature branches on `origin` (kenaki/clicky) when Ken asks in the session. Never to `main`, never to `upstream`. Otherwise stage and hand off.
+- Messages in the global format: one imperative subject, a few one-line plain-English bullets, one test-status line. No ticket ids, no co-author trailer.
+
+### Docs
+- Per-area docs in `docs/` (architecture, IPC protocol, conventions, privacy, ADRs). `docs/prototype-plan.md` is rationale only.
+- Plans: `.claude/plans/{backlog,active,archived}/<slug>/`; current feature `active/agent-sidecar/`. Findings: `to-fix/`.
 
 ### agent-sidecar quick reference
 

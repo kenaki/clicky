@@ -4,5 +4,8 @@ worker/.dev.vars
 *.xcuserstate
 build/
 releases/
-.claude/
+# Claude Code: track the workflow scaffolding (plans, board launch config), ignore local state.
+.claude/*
+!.claude/plans/
+!.claude/launch.json
 coding-plans/

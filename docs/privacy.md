@@ -55,7 +55,7 @@ you add `-- --include-sessions`, because deleting them removes those sessions fr
 
 ## Making every capture visible
 
-Requirements for the Swift app, tracked in Spike 4 of `prototype-plan.md`:
+Requirements for the Swift app, tracked in chunk 4 of `.claude/plans/active/agent-sidecar/plan.md`:
 
 - A visible indicator at the instant of every capture: a brief border flash on the captured
   display and a badge on the cursor bubble that stays up while a screenshot is in flight.

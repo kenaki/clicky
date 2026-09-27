@@ -89,7 +89,7 @@ stating the dimensions. Claude returns coordinates in that pixel space, origin t
 Swift app scales to display points and converts to AppKit's bottom-left origin. The annotation
 tools keep exactly this convention so the existing scaling code stays.
 
-## Latency budget (targets, to be measured in Spike 8)
+## Latency budget (targets; measured in chunk 8 of the plan)
 
 | Hop | Target |
 |---|---|
