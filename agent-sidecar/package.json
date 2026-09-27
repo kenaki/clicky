@@ -1,0 +1,31 @@
+{
+  "name": "clicky-agent-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local helper process that hosts the Claude Agent SDK for the Clicky voice companion. The Swift app talks to it over a localhost WebSocket.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "serve": "tsx src/cli/serve.ts",
+    "spike:tracer-bullet": "tsx src/cli/tracerBulletSpike.ts",
+    "spike:ipc-client": "tsx src/cli/ipcClientSpike.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.283",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

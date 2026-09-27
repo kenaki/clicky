@@ -9,6 +9,37 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 
 All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
 
+## This fork (kenaki/clicky)
+
+This is Ken's fork. It keeps upstream's Swift app and screen framework, and replaces the cloud
+brain and voice services:
+
+- **Brain**: a Node/TypeScript sidecar in `agent-sidecar/` hosting the **Claude Agent SDK**, with
+  custom tools for pointing at and circling the screen. It replaces `ClaudeAPI.swift` and the
+  Cloudflare Worker. The Swift app talks to it over a localhost WebSocket.
+- **Voice**: speech-to-text and text-to-speech move to Ken's DGX Spark behind OpenAI-compatible
+  endpoints, replacing AssemblyAI and ElevenLabs.
+
+Read `docs/README.md` first. `docs/architecture.md` has the component map and the seams in the
+Swift code; `docs/prototype-plan.md` is the live status of the spikes; `docs/ipc-protocol.md` is
+the app↔sidecar contract; `docs/conventions.md` adds the rules for the sidecar and the protocol.
+The upstream sections below still describe the Swift app accurately until the seams are cut.
+
+### agent-sidecar quick reference
+
+```bash
+cd agent-sidecar
+npm install
+cp .env.example .env            # add ANTHROPIC_API_KEY and CLICKY_PROJECT_DIRECTORY
+npm run typecheck && npm test
+npm run spike:tracer-bullet -- --question "where is the search bar" --speak   # Spike 0
+npm run serve -- --port 47821 --project /path/to/project                       # WebSocket server
+```
+
+Layers, dependencies pointing inward only: `cli → server → agent → protocol` (plus `config`,
+`logging`, `util`). See `docs/conventions.md`.
+
+
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
@@ -165,3 +196,26 @@ When you make changes to this project that affect the information in this file, 
 6. **Line count drift**: If a file's line count changes significantly (>50 lines), update the approximate count in the Key Files table
 
 Do NOT update this file for minor edits, bug fixes, or changes that don't affect the documented architecture or conventions.
+
+## Key Files (agent-sidecar, this fork)
+
+| File | Purpose |
+|------|---------|
+| `agent-sidecar/src/cli/serve.ts` | Entry point the Swift app spawns. Prints `listening on ws://127.0.0.1:<port>` to stdout when ready; logs go to stderr. Parent-pid watchdog. |
+| `agent-sidecar/src/cli/tracerBulletSpike.ts` | Spike 0. Screenshot + typed question into a real Agent SDK session from the terminal; prints tool calls, timings, and the session id for `claude --resume`. |
+| `agent-sidecar/src/cli/macScreenCapture.ts` | `screencapture` + `sips` helpers for the spike; 1280 px max like upstream. |
+| `agent-sidecar/src/server/sidecarWebSocketServer.ts` | Localhost WebSocket transport, single client, hello handshake, frame routing. |
+| `agent-sidecar/src/server/connectionSessionHost.ts` | Adapts session events to wire messages; parks screenshot and permission requests until the app replies. |
+| `agent-sidecar/src/server/pendingReplies.ts` | Request-id to promise registry with per-request timeouts. |
+| `agent-sidecar/src/agent/agentSession.ts` | One streaming-input Agent SDK session; attributes SDK messages to the utterance in flight; interrupt and close. |
+| `agent-sidecar/src/agent/tools/screenAnnotationTools.ts` | In-process MCP server: `point_at`, `circle_region`, `take_screenshot`. |
+| `agent-sidecar/src/agent/tools/coordinateClamping.ts` | Pure clamping of tool coordinates to screenshot bounds. |
+| `agent-sidecar/src/agent/permissionRelay.ts` | `canUseTool` bridge; builds the spoken one-sentence permission question. |
+| `agent-sidecar/src/agent/voicePersonaPrompt.ts` | Clicky's voice persona, appended to the `claude_code` preset; tool-based pointing instructions. |
+| `agent-sidecar/src/protocol/messages.ts` | zod schemas for every wire message; the executable form of `docs/ipc-protocol.md`. |
+| `agent-sidecar/src/protocol/sharedShapes.ts` | Screenshot, overlay command, permission shapes shared by layers. |
+| `agent-sidecar/src/protocol/errors.ts` | Error classes with stable wire codes. |
+| `agent-sidecar/src/config/sidecarConfig.ts` | argv + env to validated config. Only module that reads env. |
+| `agent-sidecar/src/logging/logger.ts` | Structured stderr logger. |
+| `agent-sidecar/src/util/asyncPushQueue.ts` | Async iterable queue feeding the SDK's streaming input. |
+| `agent-sidecar/test/*.test.ts` | vitest unit tests for the pure layers. |
