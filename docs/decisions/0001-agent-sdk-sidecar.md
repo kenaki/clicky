@@ -33,3 +33,15 @@ prompt persona, and the API key. The Cloudflare Worker and `ClaudeAPI.swift` are
   in Swift. Kept as the fallback if the sidecar proves fragile (Spike 4 kill criterion).
 - **Keep the raw Messages API and add tool use by hand.** Loses CLAUDE.md, skills, MCP, hooks,
   permissions, and sessions. Rebuilding those is the whole product.
+
+## Amendment, 2026-09-27
+
+The consequence above about authentication was wrong for this project. Ken has no Anthropic
+API key and wants his Claude Code subscription to be the only billing. The Agent SDK runs the
+Claude Code binary, and that binary reads the CLI's stored OAuth login, so no key is needed.
+`npm run check-auth` in `agent-sidecar/` makes one tiny request and reports the credential
+source; on 2026-09-27 it reached the login path and found the terminal CLI signed out, which
+`claude auth login` fixes. An `ANTHROPIC_API_KEY`, if ever set, takes precedence.
+
+The SDK overview notes that third-party developers may not offer claude.ai login in their
+products. This is a personal tool running on Ken's own login, not a product offered to others.

@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     }
   } catch (error) {
     process.stdout.write(`request failed: ${error instanceof Error ? error.message : String(error)}\n`);
-    process.stdout.write("if this mentions authentication, run `claude` once in a terminal and sign in, then retry.\n");
+    process.stdout.write("if this mentions authentication, run `claude auth login` in a terminal, then retry.\n");
     process.exit(1);
   }
 

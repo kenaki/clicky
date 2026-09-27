@@ -49,7 +49,7 @@ Each spike is one script or one small branch. "Needs" lists what must exist firs
 
 | # | Spike | Tests | Needs | Pass criteria |
 |---|---|---|---|---|
-| 0 | Tracer bullet: `agent-sidecar` CLI sends a screenshot plus a typed question into a streaming-input Agent SDK session with the `claude_code` preset and clicky's persona appended; `point_at`, `circle_region`, `take_screenshot` are real tools whose handlers print. Prints the session id. | A1, A2, A6 | Anthropic API key. | Claude calls `point_at` with coordinates inside the image bounds on a "where is X" question at least 8 of 10 times. `claude --resume <id>` in a terminal continues the conversation. Time to first text delta logged. |
+| 0 | Tracer bullet: `agent-sidecar` CLI sends a screenshot plus a typed question into a streaming-input Agent SDK session with the `claude_code` preset and clicky's persona appended; `point_at`, `circle_region`, `take_screenshot` are real tools whose handlers print. Prints the session id. | A1, A2, A6 | A signed-in Claude Code login (`claude auth login`). | Claude calls `point_at` with coordinates inside the image bounds on a "where is X" question at least 8 of 10 times. `claude --resume <id>` in a terminal continues the conversation. Time to first text delta logged. |
 | 1 | Spark STT: post a 5 s WAV to the Spark's `/v1/audio/transcriptions`, time it, check the words. | A3 | Spark hostname; an STT server on it. | Under 700 ms end to end on the LAN, transcript correct. |
 | 2 | Spark TTS: post one sentence to `/v1/audio/speech`, time to first byte, play with `afplay`. | A4 | Spark hostname; a TTS server on it. | Under 300 ms to first byte, voice acceptable to Ken. |
 | 3 | IPC seam: run the sidecar WebSocket server; a throwaway Node client sends `client.hello`, `session.start`, one `user.utterance` with a screenshot, and prints every event including `overlay.*` and `permission.request`. | A5 | Spike 0. | Full round trip, including answering a `screenshot.request` and a `permission.request`. |
@@ -67,10 +67,10 @@ and 2 can be started today with stand-ins on the Mac to build the harness, then 
 
 | Spike | Status | Date | Result |
 |---|---|---|---|
-| 0 | code written, typechecks, not yet run | 2026-09-27 | Needs ANTHROPIC_API_KEY in agent-sidecar/.env. Run `npm run spike:tracer-bullet -- --question "where is the search bar"`. |
+| 0 | code written, typechecks, not yet run | 2026-09-27 | Runs on the Claude Code login. `npm run check-auth` reached the login but the terminal CLI was signed out; after `claude auth login`, run `npm run spike:tracer-bullet -- --question "where is the search bar"`. |
 | 1 | not started | | |
 | 2 | not started | | |
-| 3 | transport verified; agent round trip pending | 2026-09-27 | Hello handshake, second-client refusal, malformed-frame handling, and session-not-started guard pass against the live server with no API call. Full round trip with `npm run spike:ipc-client` needs an API key. |
+| 3 | transport verified; agent round trip pending | 2026-09-27 | Hello handshake, second-client refusal, malformed-frame handling, and session-not-started guard pass against the live server with no API call. Full round trip with `npm run spike:ipc-client` needs a signed-in Claude Code login. |
 | 4 | not started | | |
 | 5 | not started | | |
 | 6 | not started | | |

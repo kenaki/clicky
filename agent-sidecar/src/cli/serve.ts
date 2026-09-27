@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { loadSidecarConfig, SidecarConfigError } from "../config/sidecarConfig.js";
 import { createLogger, resolveLogLevelFromEnvironment } from "../logging/logger.js";
 import { SidecarWebSocketServer } from "../server/sidecarWebSocketServer.js";
-import { assertProjectDirectoryExists, loadDotEnvIfPresent, readSidecarVersion, warnIfNoApiKey } from "./environment.js";
+import { assertProjectDirectoryExists, loadDotEnvIfPresent, logCredentialSource, readSidecarVersion } from "./environment.js";
 
 const PARENT_WATCHDOG_INTERVAL_MS = 2_000;
 
@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   const logger = createLogger("sidecar", { minimumLevel: resolveLogLevelFromEnvironment(config.logLevel) });
 
   assertProjectDirectoryExists(config.projectDirectory);
-  warnIfNoApiKey(config.hasAnthropicApiKey, logger);
+  logCredentialSource(config.hasAnthropicApiKey, logger);
 
   const server = new SidecarWebSocketServer({
     port: config.port,

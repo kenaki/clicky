@@ -23,12 +23,19 @@ export function assertProjectDirectoryExists(projectDirectory: string): void {
   }
 }
 
-export function warnIfNoApiKey(hasAnthropicApiKey: boolean, logger: Logger): void {
-  if (!hasAnthropicApiKey) {
-    logger.warn(
-      "ANTHROPIC_API_KEY is not set. The Agent SDK docs direct SDK apps to API-key auth; set it in agent-sidecar/.env or the environment."
-    );
+/**
+ * The sidecar runs on the Claude Code login by default, the same credentials
+ * the `claude` CLI uses in a terminal. An ANTHROPIC_API_KEY, if present, takes
+ * precedence inside the Claude Code binary, so say which one is in play.
+ */
+export function logCredentialSource(hasAnthropicApiKey: boolean, logger: Logger): void {
+  if (hasAnthropicApiKey) {
+    logger.info("using ANTHROPIC_API_KEY from the environment; unset it to use the Claude Code login instead");
+    return;
   }
+  logger.info(
+    "using the Claude Code login (no ANTHROPIC_API_KEY set); if requests fail to authenticate, run `claude auth login` in a terminal"
+  );
 }
 
 export function readSidecarVersion(): string {

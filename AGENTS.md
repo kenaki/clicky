@@ -30,7 +30,9 @@ The upstream sections below still describe the Swift app accurately until the se
 ```bash
 cd agent-sidecar
 npm install
-cp .env.example .env            # add ANTHROPIC_API_KEY and CLICKY_PROJECT_DIRECTORY
+cp .env.example .env            # set CLICKY_PROJECT_DIRECTORY; auth is your Claude Code login, no API key
+claude auth login               # once, if `claude auth status` says loggedIn false
+npm run check-auth              # one tiny request; prints which credentials the SDK used
 npm run typecheck && npm test
 npm run spike:tracer-bullet -- --question "where is the search bar" --speak   # Spike 0
 npm run serve -- --port 47821 --project /path/to/project                       # WebSocket server
@@ -202,6 +204,8 @@ Do NOT update this file for minor edits, bug fixes, or changes that don't affect
 | File | Purpose |
 |------|---------|
 | `agent-sidecar/src/cli/serve.ts` | Entry point the Swift app spawns. Prints `listening on ws://127.0.0.1:<port>` to stdout when ready; logs go to stderr. Parent-pid watchdog. |
+| `agent-sidecar/src/cli/checkAuth.ts` | Makes one tiny request and reports the credential source (`none` means the Claude Code login). |
+| `agent-sidecar/src/cli/ipcClientSpike.ts` | Spike 3 throwaway client that drives the WebSocket server like the Swift app will. |
 | `agent-sidecar/src/cli/tracerBulletSpike.ts` | Spike 0. Screenshot + typed question into a real Agent SDK session from the terminal; prints tool calls, timings, and the session id for `claude --resume`. |
 | `agent-sidecar/src/cli/macScreenCapture.ts` | `screencapture` + `sips` helpers for the spike; 1280 px max like upstream. |
 | `agent-sidecar/src/server/sidecarWebSocketServer.ts` | Localhost WebSocket transport, single client, hello handshake, frame routing. |

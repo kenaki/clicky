@@ -19,7 +19,7 @@ import { loadSidecarConfig } from "../config/sidecarConfig.js";
 import { createLogger, resolveLogLevelFromEnvironment } from "../logging/logger.js";
 import type { AgentPhase, OverlayCommand, PermissionDecision, PermissionRequest, Screenshot, VoicePermissionMode } from "../protocol/sharedShapes.js";
 import { createDeferred, type Deferred } from "../util/deferred.js";
-import { assertProjectDirectoryExists, loadDotEnvIfPresent, warnIfNoApiKey } from "./environment.js";
+import { assertProjectDirectoryExists, loadDotEnvIfPresent, logCredentialSource } from "./environment.js";
 import { captureMainDisplay, loadScreenshotFromFile } from "./macScreenCapture.js";
 
 const execFileAsync = promisify(execFile);
@@ -138,7 +138,7 @@ async function main(): Promise<void> {
   const logger = createLogger("spike", { minimumLevel: resolveLogLevelFromEnvironment(config.logLevel) });
 
   assertProjectDirectoryExists(config.projectDirectory);
-  warnIfNoApiKey(config.hasAnthropicApiKey, logger);
+  logCredentialSource(config.hasAnthropicApiKey, logger);
 
   process.stdout.write(`project: ${config.projectDirectory}\npermission mode: ${spikeArguments.permissionMode}\n`);
   process.stdout.write(spikeArguments.screenshotPath ? `screenshot: ${spikeArguments.screenshotPath}\n` : "capturing main display...\n");

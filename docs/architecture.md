@@ -26,7 +26,7 @@ is Claude, reached through the Claude Agent SDK.
 ┌──────▼───────────────┴────┐              ┌───────▼────────────┐
 │ DGX Spark (LAN)            │              │ Anthropic API       │
 │ /v1/audio/transcriptions   │              │ (via Agent SDK,     │
-│ /v1/audio/speech           │              │  API key)           │
+│ /v1/audio/speech           │              │  Claude Code login) │
 └────────────────────────────┘              └─────────────────────┘
 ```
 
@@ -35,7 +35,7 @@ is Claude, reached through the Claude Agent SDK.
 | `clicky.app` | Mac | Hotkey, microphone, screenshots, overlay animations, audio playback, settings. Owns all macOS permissions. | Stays. Loses `ClaudeAPI.swift` and the Worker URLs. |
 | `agent-sidecar` | Mac, child process of the app | Hosts one long-lived Agent SDK session with `cwd` set to Ken's project. Defines annotation tools. Relays permission prompts. | `ClaudeAPI.swift`, `worker/`, the system prompt and `[POINT:...]` regex in `CompanionManager.swift`. |
 | Spark voice server | DGX Spark | Speech-to-text and text-to-speech behind OpenAI-compatible HTTP endpoints. | AssemblyAI streaming, ElevenLabs. |
-| Anthropic API | Cloud | Claude. Billed per token against an API key held by the sidecar. | The Worker's `/chat` proxy. |
+| Anthropic API | Cloud | Claude, reached by the Claude Code binary the SDK runs, on Ken's Claude Code login. An API key, if ever set, takes precedence. | The Worker's `/chat` proxy and its secret. |
 
 ## One voice turn, end to end
 
