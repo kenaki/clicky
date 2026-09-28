@@ -545,8 +545,9 @@ struct BlueCursorView: View {
         let distance = hypot(deltaX, deltaY)
 
         // Flight duration scales with distance: short hops are quick, long
-        // flights are more dramatic. Clamped to 0.6s–1.4s.
-        let flightDurationSeconds = min(max(distance / 800.0, 0.6), 1.4)
+        // flights are more dramatic. Clamped to 0.6s–1.4s, then divided by the
+        // speed set in the menu bar panel (CompanionTuningSettings).
+        let flightDurationSeconds = min(max(distance / 800.0, 0.6), 1.4) / companionManager.tuningSettings.cursorFlightSpeed
         let frameInterval: Double = 1.0 / 60.0
         let totalFrames = Int(flightDurationSeconds / frameInterval)
         var currentFrame = 0
@@ -627,8 +628,9 @@ struct BlueCursorView: View {
             ?? "right here!"
 
         streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
-            // All characters streamed — hold for 3 seconds, then fly back
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            // All characters streamed — hold (3 s by default, set in the menu
+            // bar panel), then fly back
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.companionManager.tuningSettings.pointingHoldSeconds) {
                 guard self.buddyNavigationMode == .pointingAtTarget else { return }
                 self.navigationBubbleOpacity = 0.0
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

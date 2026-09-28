@@ -71,13 +71,21 @@ export const screenshotCapturedPayloadSchema = z.object({
   screenshots: z.array(screenshotSchema)
 });
 
+/** Allowed before `session.start`, so the menu can list conversations before one is open. */
+export const conversationsListPayloadSchema = z.object({
+  requestId: z.string().min(1),
+  /** Omit to use the sidecar's own directory, as for `session.start`. */
+  projectDirectory: z.string().min(1).optional()
+});
+
 export const incomingMessageSchema = z.discriminatedUnion("type", [
   incomingMessage("client.hello", clientHelloPayloadSchema),
   incomingMessage("session.start", sessionStartPayloadSchema),
   incomingMessage("user.utterance", userUtterancePayloadSchema),
   incomingMessage("user.interrupt", userInterruptPayloadSchema),
   incomingMessage("permission.decision", permissionDecisionPayloadSchema),
-  incomingMessage("screenshot.captured", screenshotCapturedPayloadSchema)
+  incomingMessage("screenshot.captured", screenshotCapturedPayloadSchema),
+  incomingMessage("conversations.list", conversationsListPayloadSchema)
 ]);
 
 export type IncomingMessage = z.infer<typeof incomingMessageSchema>;
@@ -115,6 +123,14 @@ export function parseIncomingMessage(rawText: string): IncomingMessage {
 export interface OutgoingPayloads {
   "sidecar.hello": { sidecarVersion: string; protocolVersion: number };
   "session.ready": { sessionId: string; projectDirectory: string; model: string };
+  /** Sent after `session.start` with a `resumeSessionId`: that session's recent exchanges, oldest first. */
+  "session.history": { sessionId: string; exchanges: Array<{ question: string; answer: string }> };
+  /** Reply to `conversations.list`: Clicky's saved sessions in the directory, newest first. */
+  "conversations.listed": {
+    requestId: string;
+    projectDirectory: string;
+    conversations: Array<{ sessionId: string; title: string; lastModifiedMs: number }>;
+  };
   "agent.status": { utteranceId: string; phase: AgentPhase; toolName?: string | undefined };
   "assistant.text_delta": { utteranceId: string; text: string };
   /** One complete sentence, as soon as the streamed text contains it. Speak these in order. */

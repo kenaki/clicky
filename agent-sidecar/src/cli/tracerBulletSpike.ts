@@ -211,6 +211,7 @@ async function main(): Promise<void> {
     model: config.model,
     effort: config.effort,
     persistSessions,
+    sandboxCommands: config.sandboxCommands,
     host,
     logger: logger.child("session")
   });

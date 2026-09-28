@@ -59,11 +59,12 @@ conversion to display points and AppKit coordinates.
 | type | payload | Notes |
 |---|---|---|
 | `client.hello` | `{ clientName, token? }` | Must be first. |
-| `session.start` | `{ projectDirectory?, resumeSessionId?, permissionMode }` | `permissionMode` is one of `default`, `plan`, `acceptEdits`. Starts or resumes the agent session. Omit `projectDirectory` to use the sidecar's own (`--project`, else `CLICKY_PROJECT_DIRECTORY`, else its working directory); the app always omits it. |
+| `session.start` | `{ projectDirectory?, resumeSessionId?, permissionMode }` | `permissionMode` is one of `default`, `plan`, `acceptEdits`. Starts or resumes the agent session. Omit `projectDirectory` to use the sidecar's own (`--project`, else `CLICKY_PROJECT_DIRECTORY`, else its working directory). The app sends the workspace picked in the menu bar panel, or omits it for "Sidecar default". A `user.utterance` whose transcript starts with a spoken "slash <command>" is sent to the SDK as the plain string `/<command> …`, without its screenshots (commands only run from a plain string). |
 | `user.utterance` | `{ utteranceId, transcript, screenshots: Screenshot[] }` | One voice turn. `screenshots` may be empty for a follow-up that does not need the screen. |
 | `user.interrupt` | `{ utteranceId? }` | Stop the current turn. The sidecar calls the SDK's interrupt. |
 | `permission.decision` | `{ permissionRequestId, decision, denialReason? }` | `decision` is `allow` or `deny`. |
 | `screenshot.captured` | `{ screenshotRequestId, screenshots: Screenshot[] }` | Reply to `screenshot.request`. |
+| `conversations.list` | `{ requestId, projectDirectory? }` | Allowed before `session.start`. Lists Clicky's saved sessions in the directory (the sidecar's own when omitted) for the menu bar's "Past" menu. Answered by `conversations.listed`. |
 
 ## Sidecar → app
 
@@ -71,6 +72,8 @@ conversion to display points and AppKit coordinates.
 |---|---|---|
 | `sidecar.hello` | `{ sidecarVersion, protocolVersion }` | Reply to `client.hello`. |
 | `session.ready` | `{ sessionId, projectDirectory }` | The SDK init message arrived. `sessionId` is what `claude --resume` takes. |
+| `session.history` | `{ sessionId, exchanges: { question, answer }[] }` | Sent after a `session.start` with `resumeSessionId`: the resumed session's last 12 exchanges, oldest first, read from its saved transcript. Not sent if the transcript cannot be read; the resume goes on regardless. |
+| `conversations.listed` | `{ requestId, projectDirectory, conversations: { sessionId, title, lastModifiedMs }[] }` | Reply to `conversations.list`, newest first, at most 20. Only sessions the SDK started (Clicky's), not ones run by hand in the same folder. `title` is Claude Code's title for the session, else the first question. |
 | `agent.status` | `{ utteranceId, phase, toolName? }` | `phase` is `thinking`, `using_tool`, or `idle`. Drives the spinner and progress narration. |
 | `assistant.text_delta` | `{ utteranceId, text }` | Incremental text as Claude writes it. For display. |
 | `assistant.sentence` | `{ utteranceId, sentenceIndex, text }` | One complete sentence, emitted the moment the streamed text contains it. Send each to TTS as it arrives and play them in order. Includes anything Claude says before or between tool calls, which is the progress narration. |

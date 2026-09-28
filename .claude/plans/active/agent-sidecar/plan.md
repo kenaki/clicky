@@ -10,23 +10,30 @@
 ---
 
 ## SESSION HANDOFF — resume here
-**State at handoff (2026-09-28):** chunks 0, 2, 3, 4 ☑; chunk 7 ◐; 1, 5, 6, 8, 9 ☐. Sidecar typechecks,
-50 unit tests pass; Swift typechecks against stub PostHog/Sparkle modules (no `xcodebuild`).
-Branch `feature/agent-sidecar-prototype`. Chunk 4, the Spark voice, spark-tts-server/ and docs are
-committed (Ken's pbxproj signing-team change is deliberately left unstaged; the project uses
-file-system synchronized groups, so new Swift files need no pbxproj edit).
-**Voice switched to Kokoro (2026-09-28, Ken):** Kokoro-FastAPI container on the Spark, RTF ~0.1; Miso stopped. Details in the tech-scout. Before that, answers were spoken by Miso TTS 8B on the Spark (Ken chose it over Kokoro despite
-RTF 2.8; see `.claude/plans/backlog/spark-tts-server/tech-scout.md`). Server: `spark-tts-server/`,
-running on the Spark from `~/clicky-voice` via `run_on_spark.sh` (manual start, not on boot). App:
-`SparkSpeechSentenceQueue.swift`, enabled by the `SparkSpeechBaseURL` user default (already set on Ken's Mac).
-**Ken's run (2026-09-28) confirmed** in-order playback. Lag is Miso itself: ~15–20 s to first speech,
-~14 s gaps, server busy back to back. **In progress: transcript panel** — pinned top right, transparent,
-same look as the existing UI, full answer streams in while the voice reads along (current sentence
-highlighted). **Built, typechecked, NOT committed — waiting on Ken's Xcode run:** `CompanionTranscriptPanel.swift`
-(replaces the unused `CompanionResponseOverlay.swift`); both speech queues report the playing sentence.
-Voice reads everything for now; "speak a short version only" is Ken's open choice.
-**Next, in Ken's order:** transcript panel → persona/voice polish if needed → later, Miso speed
-(CUDA graph for the 31-pass decoder, int8/int4, streaming) → then chunks 5, 6, 8, 9 and Spark STT (1).
+**State at handoff (2026-09-28, evening):** chunks 0, 2, 3, 4 ☑; 6 and 7 ◐; 1, 5, 8, 9 ☐. Sidecar
+typechecks, 68 unit tests pass; the whole Swift target typechecks with `swiftc -typecheck` against Xcode's
+built package modules (never `xcodebuild`). Branch `feature/agent-sidecar-prototype`. **Everything is
+committed** except Ken's pbxproj signing-team change and `xcuserdata/`, which stay unstaged on purpose.
+**Voice:** Kokoro-FastAPI on the Spark is the default (RTF ~0.1); Miso TTS 8B was the earlier choice
+(`spark-tts-server/`, `.claude/plans/backlog/spark-tts-server/tech-scout.md`). App: `SparkSpeechSentenceQueue.swift`,
+enabled by the `SparkSpeechBaseURL` user default. If the Spark is unreachable, the queue falls back to the
+Mac voice quickly instead of waiting out a 240 s request.
+**Built 2026-09-28 and committed, NOT yet run by Ken in Xcode (run these first):**
+- Transcript card (`CompanionTranscriptPanel.swift`): the window is exactly the card (measured by an
+  off-screen copy), always takes clicks and scrolls; × and Escape close it and nothing else hides it;
+  reply field sends the next turn; click a line or an earlier answer to hear it again; header play/stop
+  and a speed menu (`speechSpeed`, Kokoro's rate).
+- Typed questions: "Ask Clicky" field in the menu bar panel (`CompanionAskClickyRow.swift`) and a global
+  "speak answers" switch; typed text goes through `handleFinalTranscript`, so it can answer a permission.
+- Past conversations: "Past" menu on the Conversation row; the sidecar lists Clicky's SDK sessions per
+  workspace (`pastConversations.ts`), resumes one, and sends `session.history` to refill the card.
+- LaTeX spike: SwiftMath 1.7.3 draws display equations natively (`CompanionMathEquationView.swift`);
+  Debug builds show hard-coded samples under every answer. Nothing sends equations yet.
+- Also from the parallel voice session: voice & motion settings, spoken permissions (chunk 6), workspace
+  picker, spoken slash commands, sandboxed voice sessions, researchML PHI deny rule.
+**Next, in Ken's order:** 1) Ken's Xcode run of the list above; 2) **chunk 5, widened** — circle *and*
+highlight (yellow translucent overlay) what Claude is talking about, see the chunk; 3) the follow-ups
+under "Next features" below; then chunks 8, 9 and Spark STT (1).
 **To resume:** 1) read this whole file; 2) read `brief.md` and `docs/conventions.md`; 3) do the next ☐
 chunk in dependency order — **one chunk per session**; 4) at the end: verify → commit → update Status +
 Changelog → announce "✅ Chunk X complete — safe to clear context" → stop.
@@ -73,8 +80,8 @@ the user the plan is complete and archived.
 | 2 | Spark TTS probe | ☑ done | 2026-09-27 | Miso on Spark, RTF 2.8; see spark-tts-server tech-scout |
 | 3 | IPC round trip through the WebSocket server | ☑ done | 2026-09-27 | screenshot + deny paths live; watchdog exits in 2 s |
 | 4 | Swift sidecar client, spawn/kill, capture indicator | ☑ done | 2026-09-27 | Ken's Xcode run passed; interim Apple Speech + macOS voice |
-| 5 | Circle gesture in the overlay | ☐ todo | | needs 4 |
-| 6 | Spoken permissions | ☐ todo | | needs 2, 4 |
+| 5 | Circle and highlight in the overlay | ☐ todo | | next; widened 2026-09-28, see chunk |
+| 6 | Spoken permissions | ◐ in progress | 2026-09-28 | built; voice, card buttons, or typed; Ken's run |
 | 7 | App-side sentence playback + barge-in | ◐ in progress | 2026-09-28 | order verified; gap check fails on Miso speed |
 | 8 | Latency budget, measured table | ☐ todo | | needs 1, 2, 4 |
 | 9 | Pointing accuracy vs upstream's tag | ☐ todo | | needs 0 only |
@@ -92,6 +99,9 @@ Legend: ☐ todo · ◐ in progress · ☑ done · ⏸ blocked · ⊘ deferred. 
 - 2026-09-28 — Chunk 7 ◐: Ken's run plays every sentence in order; gaps ~14 s are Miso RTF 2.8 (server never idle), not the app.
 - 2026-09-28 — Transcript panel built (top right, frosted, read-along highlight); typechecked; awaiting Ken's Xcode run.
 - 2026-09-28 — Voice switched to Kokoro on the Spark (0.5 s per sentence); `SparkSpeechModel` user default added. Awaiting Ken's Xcode run.
+- 2026-09-28 — Live voice/motion controls, panel history + hover scroll, session resume + New conversation; typechecked, resume untested live; awaiting Ken's run.
+- 2026-09-28 — Chunk 6 ◐ spoken permissions; workspace picker; spoken slash commands; sandboxed voice sessions + researchML PHI deny rule (decoy-verified). 57 tests.
+- 2026-09-28 — Card rework (card-sized window, close, reply, replay, speed, no auto-hide), typed questions + speak switch, Past conversations, SwiftMath LaTeX spike. 68 tests; Ken's run pending.
 - 2026-09-27 — Ken's workflow integrated: this plan and `brief.md`; `.claude/plans` un-ignored; AGENTS.md follows the project template.
 
 ### Produced values (runtime handoffs)
@@ -128,7 +138,11 @@ See `brief.md`. Build-now: chunks 0–9. Deferred: wake word, computer use, loca
 | P-spawn-token | Random per-launch `CLICKY_SIDECAR_TOKEN` for a spawned sidecar | S2 (local hardening) | auto-decided | env wins over `.env` |
 | P-project-source | `session.start.projectDirectory` optional; sidecar's own wins | S2 (non-breaking wire change) | auto-decided | fixes Q-project-dir-source |
 | P-interim-voice | Apple Speech in, macOS voice out until the Spark | S2 (reversible, Worker never deployed) | auto-decided | replaced in chunks 1, 2, 7 |
-| P-permission-stopgap | Deny every `permission.request` at once until chunk 6 | S2 (safe default) | auto-decided | edits never happen by voice yet |
+| P-permission-stopgap | Deny every `permission.request` at once until chunk 6 | S2 (safe default) | superseded 2026-09-28 | replaced by chunk 6 |
+| P-permission-answer | Answer by the next push-to-talk or the card's buttons, never an auto-opened mic | S3 (consent: memory ken-screen-capture-and-audio-consent) | auto-decided, differs from chunk 6 spec | a yes needs a clear yes and no negation |
+| P-sandbox | Voice sessions run shell commands in Claude Code's sandbox, no escape | S3 (privacy: grep -r bypassed Read deny on a decoy) | ☑ Ken asked for the PHI guard | `CLICKY_SANDBOX_COMMANDS`, default true |
+| P-workspaces | Workspace picker; one saved session per workspace | S2 (app setting) | ☑ Ken 2026-09-28 | resolves Q-project-dir |
+| P-slash-plain-string | Spoken "slash <name>" sent as the plain string, no screenshots | S2 (SDK only expands plain strings, probed) | auto-decided | names from `supportedCommands()` |
 
 ## Conventions / translation notes
 - Coordinates: screenshot pixel space, origin top-left; app scales to display points and flips to AppKit bottom-left. Unchanged from upstream.
@@ -167,11 +181,22 @@ See `brief.md`. Build-now: chunks 0–9. Deferred: wake word, computer use, loca
 - **Steps:** build the sidecar (`npm run build`) so `dist/` exists; add the two Swift files; replace the `claudeAPI.analyzeImageStreaming` call; keep AssemblyAI and ElevenLabs for now so one thing changes; add `NSAllowsLocalNetworking` under `NSAppTransportSecurity` only if the loopback WebSocket is refused (verify first).
 - **Verify:** push-to-talk end to end with the cursor driven by `overlay.point_at`; the flash and badge show on every capture; quitting the app leaves no `serve.js` process (`pgrep -f serve.js` empty).
 
-### Chunk 5 — Circle gesture in the overlay
-- **Goal:** `overlay.circle_region` draws a circle around the region on the right display.
-- **Read first:** `leanring-buddy/OverlayWindow.swift` (bezier flight, multi-monitor mapping); `leanring-buddy/CompanionTranscriptPanel.swift` (overlay panel pattern).
-- **Steps:** new SwiftUI shape driven by a published `detectedRegion` on `CompanionManager`; reuse the point scaling for the rectangle's corners; fade with the existing transient-hide logic.
-- **Verify:** ask "circle the save button"; the circle lands on it, on a secondary monitor too.
+### Chunk 5 — Circle and highlight in the overlay
+- **Goal:** `overlay.circle_region` draws on the right display what Claude is talking about. Ken
+  (2026-09-28): "circle things, highlight things, put a yellow overlay on it". Today the app only flies
+  the cursor to the region's centre (`CompanionManager.swift`, `case .overlayCircleRegion`).
+- **Read first:** `leanring-buddy/OverlayWindow.swift` (bezier flight, multi-monitor mapping);
+  `CompanionManager.pointCursorAtAgentScreenshotLocation` (screenshot pixels → display points → AppKit);
+  `agent-sidecar/src/agent/tools/screenAnnotationTools.ts`; `voicePersonaPrompt.ts` (pointing section).
+- **Steps:** add an optional `style` to `circle_region` and its wire message: `circle` (default, an
+  outline) or `highlight` (translucent yellow fill, soft edge, like a highlighter). Additive, protocol
+  stays v1. Draw it in the overlay from a published `detectedRegion` on `CompanionManager`, reusing the
+  point scaling for the rectangle's corners; several may show at once in one turn. Clear on
+  `overlay.clear`, the next push-to-talk, or after `pointingHoldSeconds`. Tell the persona when to use
+  each style. Optional, ask Ken: keep a region lit while the transcript card is speaking the sentence
+  that introduced it.
+- **Verify:** "circle the save button" and "highlight the loss line" each land on target, on a secondary
+  monitor too; the highlight never blocks clicks (overlay stays click-through).
 
 ### Chunk 6 — Spoken permissions
 - **Goal:** `permission.request` → spoken question → yes or no → `permission.decision`.
@@ -198,6 +223,20 @@ See `brief.md`. Build-now: chunks 0–9. Deferred: wake word, computer use, loca
 - **Steps:** 20 fixed screenshots with known targets; run each through the tool path (`spike:tracer-bullet --screenshot`) and a tag-prompt baseline; compare median error as a fraction of width.
 - **Verify:** median error under 3 percent of width and no worse than the baseline; else open a decision to add a grounding call.
 
+### Next features (asked for 2026-09-28, not chunked yet)
+- **LaTeX in the card:** the prompt tells Claude to put each formula alone in `$$…$$`; a pure sidecar
+  step pulls it out of the speech stream (before `SentenceStreamSplitter`) and sends `assistant.math
+  { utteranceId, afterSentenceIndex, latex }`; the card renders it with `CompanionMathEquationView`
+  and becomes a list of items (sentence, equation). Remove the Debug samples then. Rationale: Ken's
+  open-notebook project renders LaTeX with KaTeX; Clicky must split it from speech first.
+- **Screen crops in the card:** on `overlay.point_at` / `circle_region`, crop `latestScreenCaptures`
+  to the target and show it after the current sentence, caption = the tool's label. No protocol change;
+  in memory only (update `docs/privacy.md`). Doubles as a visual check of pointing accuracy (chunk 9).
+- **Typed-turn replies:** typed questions still get the spoken persona (short, lowercase); mark a turn as
+  typed so Claude may write longer or formatted answers.
+- **Optional Clicky-only instructions file** appended after the persona, so the voice can be tuned
+  without editing TypeScript.
+
 ### Deferred (documented, not built now)
 - **Wake word / continuous listening** ⊘ push-to-talk is the product; needs VAD and a privacy story first.
 - **Computer use (click/type)** ⊘ out of scope per brief; safety model undecided.
@@ -205,14 +244,14 @@ See `brief.md`. Build-now: chunks 0–9. Deferred: wake word, computer use, loca
 - **Bundling Node with the app** ⊘ P-sidecar-spawn; dev uses system Node.
 
 ## Verification (end-to-end)
-- Sidecar: `cd agent-sidecar && npm run typecheck && npm test` (44 tests). Known noise: `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning at startup is expected.
+- Sidecar: `cd agent-sidecar && npm run typecheck && npm test` (68 tests). Known noise: `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning at startup is expected.
 - Swift: build and run from Xcode only. Known noise: Swift 6 concurrency warnings, deprecated `onChange` in `OverlayWindow.swift`. Do not fix.
 - Auth: `npm run check-auth` must report credential source `none` (the login).
 - Privacy: `npm run privacy:list` after any capture-related change.
 
 ## Open Questions (surface to human; don't guess)
 - ~~Q-spark-host~~ — resolved: reachable over SSH (see memory `spark-ssh-access`); never committed.
-- **Q-project-dir** — default project directory for voice; panel switch? Default `CLICKY_PROJECT_DIRECTORY`.
+- ~~Q-project-dir~~ — resolved 2026-09-28: Workspace picker in the menu bar panel (P-workspaces).
 - **Q-persist** — transcripts on disk by default? Default true (G-persist ⏸).
 - **Q-mcp-noise** — restrict voice sessions to project setting sources? Default: leave, measure in chunk 8. Chunk 3 turns cost $0.24–0.37 each; check what the prompt carries.
 - ~~Q-project-dir-source~~ — resolved in chunk 4 (P-project-source). The app omits it; set `CLICKY_PROJECT_DIRECTORY` in `agent-sidecar/.env`, else sessions run in `agent-sidecar/`.

@@ -29,6 +29,8 @@ export interface SidecarConfig {
    * on voice sessions; false keeps nothing on disk. See docs/privacy.md.
    */
   persistSessions: boolean;
+  /** Run the agent's shell commands in Claude Code's OS sandbox, so Read deny rules also bind them. */
+  sandboxCommands: boolean;
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
@@ -51,6 +53,7 @@ const sidecarConfigSchema = z.object({
   parentProcessId: z.number().int().positive().nullable(),
   hasAnthropicApiKey: z.boolean(),
   persistSessions: z.boolean(),
+  sandboxCommands: z.boolean(),
   logLevel: z.enum(["debug", "info", "warn", "error"])
 });
 
@@ -118,6 +121,7 @@ export function loadSidecarConfig(input: LoadSidecarConfigInput): SidecarConfig 
     parentProcessId: parseOptionalInteger(values["parent-pid"] as string | undefined, "--parent-pid"),
     hasAnthropicApiKey: emptyToNull(input.env.ANTHROPIC_API_KEY) !== null,
     persistSessions: parseBooleanFlag(input.env.CLICKY_PERSIST_SESSIONS, true),
+    sandboxCommands: parseBooleanFlag(input.env.CLICKY_SANDBOX_COMMANDS, true),
     logLevel: emptyToNull(values["log-level"] as string | undefined) ?? emptyToNull(input.env.CLICKY_SIDECAR_LOG_LEVEL) ?? "info"
   };
 

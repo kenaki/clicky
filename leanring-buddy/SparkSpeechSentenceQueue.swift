@@ -17,9 +17,10 @@
 //  Configuration: the server's base URL comes from the `SparkSpeechBaseURL`
 //  user default (kept out of the repo because it names Ken's machine), e.g.
 //    defaults write com.yourcompany.leanring-buddy SparkSpeechBaseURL http://<spark>.local:8880
-//  `SparkSpeechModel` and `SparkSpeechVoice` pick what the server runs:
-//  "miso-tts-8b" / "warm" (defaults) for spark-tts-server/, or "kokoro" /
-//  e.g. "af_heart" for Kokoro-FastAPI. Both servers speak the same shape.
+//  `SparkSpeechModel` picks what the server runs: "miso-tts-8b" (default) for
+//  spark-tts-server/, or "kokoro" for Kokoro-FastAPI. Both speak the same shape.
+//  Voice and speed come from CompanionTuningSettings at every request, so a
+//  change in the menu bar panel applies from the next sentence.
 //
 
 import AVFoundation
@@ -45,10 +46,20 @@ final class SparkSpeechSentenceQueue {
     private static let serverSampleRate: Double = 24_000
     /// Miso generates slower than real time and one sentence at a time, so a
     /// later sentence can wait behind earlier ones for well over a minute.
-    private static let requestTimeoutSeconds: TimeInterval = 240
+    /// Kokoro answers in well under a second, so anything past 20 s means the
+    /// Spark is gone and the macOS voice should take over.
+    private static let misoRequestTimeoutSeconds: TimeInterval = 240
+    private static let kokoroRequestTimeoutSeconds: TimeInterval = 20
+    /// After a failure, every sentence goes straight to the macOS voice for this
+    /// long instead of each one waiting out its own timeout (seen 2026-09-28:
+    /// the Spark dropped off the network and the panel sat on "getting the voice ready").
+    private static let fallbackAfterFailureSeconds: TimeInterval = 60
 
     let modelName: String
-    let voiceName: String
+    private let tuningSettings: CompanionTuningSettings
+    private let requestTimeoutSeconds: TimeInterval
+    /// Set by a failed request; until then, sentences skip the Spark.
+    private var skipSparkUntil: Date?
     /// Called with the sentence text (and its index, if any) when the server could
     /// not voice it, so the caller can fall back to the macOS voice rather than drop the words.
     var sentenceFailureHandler: ((String, Int?) -> Void)?
@@ -57,6 +68,7 @@ final class SparkSpeechSentenceQueue {
     var sentencePlaybackChangeHandler: ((Int?) -> Void)?
 
     private let speechEndpointURL: URL
+    private let voicesEndpointURL: URL
     private let urlSession: URLSession
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -78,7 +90,7 @@ final class SparkSpeechSentenceQueue {
     private var sentenceIndexesScheduledForPlayback: [Int?] = []
 
     /// Nil when no voice server is configured; the caller then uses the macOS voice.
-    static func makeIfConfigured() -> SparkSpeechSentenceQueue? {
+    static func makeIfConfigured(tuningSettings: CompanionTuningSettings) -> SparkSpeechSentenceQueue? {
         let configuredBaseURLString = UserDefaults.standard.string(forKey: "SparkSpeechBaseURL")
             ?? AppBundleConfiguration.stringValue(forKey: "SparkSpeechBaseURL")
         guard let configuredBaseURLString,
@@ -87,19 +99,20 @@ final class SparkSpeechSentenceQueue {
             return nil
         }
         let modelName = UserDefaults.standard.string(forKey: "SparkSpeechModel") ?? "miso-tts-8b"
-        let voiceName = UserDefaults.standard.string(forKey: "SparkSpeechVoice") ?? "warm"
-        return SparkSpeechSentenceQueue(baseURL: baseURL, modelName: modelName, voiceName: voiceName)
+        return SparkSpeechSentenceQueue(baseURL: baseURL, modelName: modelName, tuningSettings: tuningSettings)
     }
 
-    private init(baseURL: URL, modelName: String, voiceName: String) {
+    private init(baseURL: URL, modelName: String, tuningSettings: CompanionTuningSettings) {
         self.speechEndpointURL = baseURL.appendingPathComponent("v1/audio/speech")
+        self.voicesEndpointURL = baseURL.appendingPathComponent("v1/audio/voices")
         self.modelName = modelName
-        self.voiceName = voiceName
+        self.tuningSettings = tuningSettings
+        self.requestTimeoutSeconds = modelName == "kokoro" ? Self.kokoroRequestTimeoutSeconds : Self.misoRequestTimeoutSeconds
 
         let sessionConfiguration = URLSessionConfiguration.default
         // The server sends nothing until the whole sentence is generated, so
         // the idle timeout has to cover the full generation time too.
-        sessionConfiguration.timeoutIntervalForRequest = Self.requestTimeoutSeconds
+        sessionConfiguration.timeoutIntervalForRequest = requestTimeoutSeconds
         self.urlSession = URLSession(configuration: sessionConfiguration)
 
         audioEngine.attach(playerNode)
@@ -117,6 +130,10 @@ final class SparkSpeechSentenceQueue {
     func enqueueSentence(_ sentenceText: String, sentenceIndex: Int? = nil) {
         let trimmedSentenceText = sentenceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSentenceText.isEmpty else { return }
+        if let skipSparkUntil, Date() < skipSparkUntil {
+            sentenceFailureHandler?(trimmedSentenceText, sentenceIndex)
+            return
+        }
         sentencesWaitingToBeRequested.append((text: trimmedSentenceText, sentenceIndex: sentenceIndex))
         requestNextSentenceIfIdle()
     }
@@ -146,8 +163,16 @@ final class SparkSpeechSentenceQueue {
             } catch {
                 // A stop cancels this task; that is not a failure to report.
                 guard !Task.isCancelled, playbackGeneration == playbackGenerationAtRequest else { return }
-                print("⚠️ Spark voice failed: \(error.localizedDescription)")
+                print("⚠️ Spark voice failed, using the macOS voice for \(Int(Self.fallbackAfterFailureSeconds)) s: \(error.localizedDescription)")
+                skipSparkUntil = Date().addingTimeInterval(Self.fallbackAfterFailureSeconds)
+                // This sentence and everything behind it, in order, rather than
+                // each one waiting out the same failure.
                 sentenceFailureHandler?(sentenceText, sentenceIndex)
+                let sentencesBehindIt = sentencesWaitingToBeRequested
+                sentencesWaitingToBeRequested.removeAll()
+                for waitingSentence in sentencesBehindIt {
+                    sentenceFailureHandler?(waitingSentence.text, waitingSentence.sentenceIndex)
+                }
             }
 
             guard playbackGeneration == playbackGenerationAtRequest else { return }
@@ -206,13 +231,14 @@ final class SparkSpeechSentenceQueue {
     // MARK: - Network
 
     private func fetchSpeechBuffer(for sentenceText: String) async throws -> AVAudioPCMBuffer {
-        var speechRequest = URLRequest(url: speechEndpointURL, timeoutInterval: Self.requestTimeoutSeconds)
+        var speechRequest = URLRequest(url: speechEndpointURL, timeoutInterval: requestTimeoutSeconds)
         speechRequest.httpMethod = "POST"
         speechRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         speechRequest.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": modelName,
             "input": sentenceText,
-            "voice": voiceName,
+            "voice": tuningSettings.speechVoiceRequestValue,
+            "speed": tuningSettings.speechSpeed,
             "response_format": "pcm",
             // Kokoro-FastAPI streams by default; one whole body per sentence keeps
             // this the same as Miso. Kokoro is fast enough that it costs little.
@@ -229,6 +255,32 @@ final class SparkSpeechSentenceQueue {
         let sentenceBuffer = try makeFloatBuffer(fromLittleEndianInt16PCM: responseData)
         print("🔊 Spark voice: \(String(format: "%.1f", Double(sentenceBuffer.frameLength) / Self.serverSampleRate)) s of audio after \(String(format: "%.1f", Date().timeIntervalSince(requestStartedAt))) s")
         return sentenceBuffer
+    }
+
+    /// English voice ids the server offers (Kokoro's `GET /v1/audio/voices`,
+    /// entries shaped `{ id, name, … }`), sorted, without the older "v0" set.
+    /// Empty when the server has no voice list, as the Miso server does not.
+    func fetchAvailableEnglishVoiceNames() async -> [String] {
+        struct VoiceListResponse: Decodable {
+            struct VoiceEntry: Decodable { let id: String }
+            let voices: [VoiceEntry]
+        }
+        do {
+            let (responseData, response) = try await urlSession.data(from: voicesEndpointURL)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+            let voiceIds = try JSONDecoder().decode(VoiceListResponse.self, from: responseData).voices.map(\.id)
+            // Kokoro ids start with a language letter then gender: "af_", "bm_", …
+            // "a" is American English, "b" British English.
+            return voiceIds
+                .filter { voiceId in
+                    let prefix = voiceId.prefix(3)
+                    return ["af_", "am_", "bf_", "bm_"].contains(String(prefix)) && !voiceId.contains("_v0")
+                }
+                .sorted()
+        } catch {
+            print("⚠️ Spark voice: could not list voices: \(error.localizedDescription)")
+            return []
+        }
     }
 
     /// Converts raw 16-bit samples to the Float32 buffer the player node plays.

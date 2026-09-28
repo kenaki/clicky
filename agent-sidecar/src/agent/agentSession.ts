@@ -20,6 +20,7 @@ import type {
 } from "../protocol/sharedShapes.js";
 import type { Logger } from "../logging/logger.js";
 import { AsyncPushQueue } from "../util/asyncPushQueue.js";
+import { rewriteSpokenSlashCommand } from "./spokenSlashCommand.js";
 import { createDeferred, type Deferred } from "../util/deferred.js";
 import { createPermissionRelay } from "./permissionRelay.js";
 import { SentenceStreamSplitter } from "./sentenceStreamSplitter.js";
@@ -74,6 +75,12 @@ export interface AgentSessionOptions {
   effort: EffortLevel;
   /** False keeps the transcript, and therefore every screenshot, off disk; see docs/privacy.md. */
   persistSessions: boolean;
+  /**
+   * Shell commands run in Claude Code's OS sandbox with no way out, so the
+   * project's `Read(...)` deny rules bind `grep -r`, `find` and `cat` too; read-only
+   * commands are auto-approved and never reach the permission relay (docs/privacy.md).
+   */
+  sandboxCommands: boolean;
   host: AgentSessionHost;
   logger: Logger;
 }
@@ -105,6 +112,8 @@ export class AgentSession {
   private sdkQuery: Query | null = null;
   private consumeLoop: Promise<void> | null = null;
   private sessionId: string | null = null;
+  /** Command and skill names for spoken slash commands; filled at start, refreshed by init. */
+  private slashCommandNames: Promise<string[]> = Promise.resolve([]);
   private turnInFlight: TurnInFlight | null = null;
   private terminalFailureMessage: string | null = null;
 
@@ -156,6 +165,9 @@ export class AgentSession {
         model: this.options.model,
         effort: this.options.effort,
         persistSession: this.options.persistSessions,
+        ...(this.options.sandboxCommands
+          ? { sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false } }
+          : {}),
         abortController: this.abortController,
         stderr: (line) => this.logger.debug("claude stderr", { line: line.trimEnd() }),
         ...(resumeSessionId !== undefined ? { resume: resumeSessionId } : {})
@@ -163,12 +175,20 @@ export class AgentSession {
     });
 
     this.consumeLoop = this.consumeSdkMessages(this.sdkQuery);
+    this.slashCommandNames = this.sdkQuery
+      .supportedCommands()
+      .then((slashCommands) => slashCommands.map((slashCommand) => slashCommand.name))
+      .catch((error: unknown) => {
+        this.logger.warn("could not list slash commands", { error: describeUnknownError(error) });
+        return [];
+      });
     this.logger.info("session starting", {
       projectDirectory: this.options.projectDirectory,
       permissionMode: this.options.permissionMode,
       model: this.options.model,
       effort: this.options.effort,
       persistSessions: this.options.persistSessions,
+      sandboxCommands: this.options.sandboxCommands,
       resumeSessionId: resumeSessionId ?? null
     });
   }
@@ -184,7 +204,11 @@ export class AgentSession {
       await this.interrupt();
     }
 
-    this.rememberScreenshotBounds(input.screenshots);
+    // A spoken "slash teach …" goes out as the bare string the SDK expands; it
+    // carries no screenshots, because commands only run from a plain string.
+    const slashCommandText = rewriteSpokenSlashCommand(input.transcript, await this.slashCommandNamesWithin(1_500));
+
+    this.rememberScreenshotBounds(slashCommandText ? [] : input.screenshots);
     this.turnInFlight = {
       utteranceId: input.utteranceId,
       startedAtMs: Date.now(),
@@ -196,13 +220,14 @@ export class AgentSession {
 
     this.inputQueue.push({
       type: "user",
-      message: { role: "user", content: this.buildUserContent(input) },
+      message: { role: "user", content: slashCommandText ?? this.buildUserContent(input) },
       parent_tool_use_id: null
     });
     this.options.host.handleStatus({ utteranceId: input.utteranceId, phase: "thinking" });
     this.logger.info("utterance sent", {
       utteranceId: input.utteranceId,
       transcriptLength: input.transcript.length,
+      slashCommand: slashCommandText?.split(" ")[0] ?? null,
       screenshotCount: input.screenshots.length,
       screenshotBytes: input.screenshots.reduce((total, screenshot) => total + screenshot.jpegBase64.length, 0)
     });
@@ -266,6 +291,12 @@ export class AgentSession {
     }
   }
 
+  /** The command list, or none if the SDK has not answered in time (then nothing is rewritten). */
+  private async slashCommandNamesWithin(timeoutMs: number): Promise<string[]> {
+    const timedOut = new Promise<string[]>((resolve) => setTimeout(() => resolve([]), timeoutMs));
+    return Promise.race([this.slashCommandNames, timedOut]);
+  }
+
   private buildUserContent(input: UtteranceInput): UserContentBlock[] {
     const contentBlocks: UserContentBlock[] = [];
     for (const screenshot of input.screenshots) {
@@ -307,6 +338,9 @@ export class AgentSession {
       case "system":
         if (message.subtype === "init") {
           this.sessionId = message.session_id;
+          if (message.slash_commands.length > 0) {
+            this.slashCommandNames = Promise.resolve(message.slash_commands);
+          }
           this.logger.info("session ready", {
             sessionId: message.session_id,
             model: message.model,

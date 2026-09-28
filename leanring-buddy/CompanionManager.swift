@@ -65,11 +65,42 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
-    /// The current voice turn as text, pinned top right, so the answer can be
+    /// Voice and motion settings the menu bar panel changes live.
+    let tuningSettings = CompanionTuningSettings()
+    /// The conversation as text, pinned top right, so the answer can be
     /// read ahead of the voice.
-    let transcriptPanelManager = CompanionTranscriptPanelManager()
-    /// Fades the transcript panel a few seconds after the last word is spoken.
-    private var transcriptPanelHideTask: Task<Void, Never>?
+    private(set) lazy var transcriptPanelManager: CompanionTranscriptPanelManager = {
+        let transcriptPanelManager = CompanionTranscriptPanelManager(tuningSettings: tuningSettings)
+        transcriptPanelManager.permissionAnswerHandler = { [weak self] permissionRequestId, isAllowed in
+            self?.answerAgentPermission(
+                permissionRequestId: permissionRequestId,
+                isAllowed: isAllowed,
+                denialReason: "the user clicked deny"
+            )
+        }
+        // A reply typed on the card is the same as one typed in the menu bar.
+        transcriptPanelManager.replyHandler = { [weak self] replyText in
+            self?.sendTypedQuestion(replyText)
+        }
+        transcriptPanelManager.replaySentenceHandler = { [weak self] sentenceIndex in
+            self?.replayCurrentAnswerSentences(onlySentenceIndex: sentenceIndex)
+        }
+        transcriptPanelManager.replayWholeAnswerHandler = { [weak self] in
+            self?.replayCurrentAnswerSentences(onlySentenceIndex: nil)
+        }
+        transcriptPanelManager.replayEarlierAnswerHandler = { [weak self] earlierAnswerText in
+            self?.replayEarlierAnswer(earlierAnswerText)
+        }
+        transcriptPanelManager.stopSpeakingHandler = { [weak self] in
+            self?.stopSpeakingFromTranscriptCard()
+        }
+        return transcriptPanelManager
+    }()
+    /// Waits for the voice to finish, then settles the transcript card's highlight.
+    private var transcriptSpeechFinishedTask: Task<Void, Never>?
+    /// Set by the card's stop button while an answer is still arriving, so its
+    /// remaining sentences are shown but not spoken. Cleared by the next question.
+    private var isCurrentAnswerSilenced = false
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
@@ -90,7 +121,7 @@ final class CompanionManager: ObservableObject {
     private let agentSidecarClient = AgentSidecarClient()
     private let sidecarProcessController = SidecarProcessController()
     /// Built-in macOS voice: speaks answers when no Spark voice server is configured,
-    /// and always speaks error fallbacks, which must work even when the Spark is down.
+    /// and speaks error fallbacks, which must work even when the Spark is down.
     private lazy var systemSpeechSentenceQueue: SystemSpeechSentenceQueue = {
         let systemSpeechSentenceQueue = SystemSpeechSentenceQueue()
         systemSpeechSentenceQueue.sentencePlaybackChangeHandler = { [weak self] speakingSentenceIndex in
@@ -100,7 +131,7 @@ final class CompanionManager: ObservableObject {
     }()
     /// Miso on the Spark (spark-tts-server/), when `SparkSpeechBaseURL` is set.
     private lazy var sparkSpeechSentenceQueue: SparkSpeechSentenceQueue? = {
-        let sparkSpeechSentenceQueue = SparkSpeechSentenceQueue.makeIfConfigured()
+        let sparkSpeechSentenceQueue = SparkSpeechSentenceQueue.makeIfConfigured(tuningSettings: tuningSettings)
         sparkSpeechSentenceQueue?.sentenceFailureHandler = { [weak self] failedSentenceText, sentenceIndex in
             // Say the words in the backup voice rather than drop them.
             self?.systemSpeechSentenceQueue.enqueueSentence(failedSentenceText, sentenceIndex: sentenceIndex)
@@ -112,6 +143,27 @@ final class CompanionManager: ObservableObject {
     }()
     /// The in-flight attach-or-spawn, shared so two quick utterances never start two sidecars.
     private var sidecarConnectionTask: Task<Void, Error>?
+    /// The token of the sidecar this app spawned, so a reconnect (after "new
+    /// conversation" or a dropped socket) can attach to it again.
+    private var spawnedSidecarSharedToken: String?
+    /// The session id this connection asked to resume, if any; cleared once it is known good.
+    private var resumeSessionIdForCurrentConnection: String?
+    /// Last session id per workspace path ("" is the sidecar's own default folder).
+    private static let lastAgentSessionIdsDefaultsKey = "AgentSidecarLastSessionIds"
+    /// Before workspaces: one id for the sidecar's default folder. Read once, then moved.
+    private static let legacyLastAgentSessionIdDefaultsKey = "AgentSidecarLastSessionId"
+    private static let agentWorkspaceDirectoriesDefaultsKey = "AgentWorkspaceDirectories"
+    private static let selectedAgentWorkspaceDirectoryDefaultsKey = "AgentWorkspaceDirectory"
+    /// Claude's tool requests waiting for a yes or no, oldest first; the first is the one asked.
+    private var pendingAgentPermissions: [PendingAgentPermission] = []
+    /// The sidecar denies an unanswered request at 30 s; the question comes off the card a moment before.
+    private static let permissionAnswerWindowNanoseconds: UInt64 = 29_000_000_000
+
+    private struct PendingAgentPermission {
+        let permissionRequestId: String
+        let spokenQuestion: String
+        let expiryTask: Task<Void, Never>
+    }
     /// The utterance whose turn is running; sentences from any other turn are stale.
     private var currentAgentUtteranceId: String?
     /// Resumed when the sidecar finishes, fails, or abandons the turn for that utterance.
@@ -124,9 +176,117 @@ final class CompanionManager: ObservableObject {
     /// Which voice speaks answers, for the panel.
     var speechVoiceStatusText: String {
         if let sparkSpeechSentenceQueue {
-            return "\(sparkSpeechSentenceQueue.modelName) on Spark (\(sparkSpeechSentenceQueue.voiceName))"
+            return "\(sparkSpeechSentenceQueue.modelName) on Spark"
         }
         return "macOS voice"
+    }
+
+    // MARK: - Workspaces
+
+    /// Folders the agent can work in, picked in the menu bar panel. Sessions run
+    /// there, so the folder's CLAUDE.md, .claude/ settings and skills apply.
+    @Published private(set) var agentWorkspaceDirectories: [String] =
+        UserDefaults.standard.stringArray(forKey: CompanionManager.agentWorkspaceDirectoriesDefaultsKey) ?? []
+    /// nil means the sidecar's own folder (`CLICKY_PROJECT_DIRECTORY`).
+    @Published private(set) var selectedAgentWorkspaceDirectory: String? =
+        UserDefaults.standard.string(forKey: CompanionManager.selectedAgentWorkspaceDirectoryDefaultsKey)
+    /// The folder the running session actually uses, from `session.ready`.
+    @Published private(set) var activeAgentProjectDirectory: String?
+
+    /// Switches the folder the agent works in. The current session ends; the
+    /// next question resumes that workspace's own last conversation.
+    func selectAgentWorkspace(_ workspaceDirectory: String?) {
+        guard workspaceDirectory != selectedAgentWorkspaceDirectory else { return }
+        selectedAgentWorkspaceDirectory = workspaceDirectory
+        if let workspaceDirectory {
+            UserDefaults.standard.set(workspaceDirectory, forKey: Self.selectedAgentWorkspaceDirectoryDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.selectedAgentWorkspaceDirectoryDefaultsKey)
+        }
+        endAgentSessionForNextQuestion(statusText: "switches on your next question")
+    }
+
+    /// Asks for a folder and adds it as a workspace, then switches to it.
+    func addAgentWorkspaceFromOpenPanel() {
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let folderOpenPanel = NSOpenPanel()
+        folderOpenPanel.canChooseDirectories = true
+        folderOpenPanel.canChooseFiles = false
+        folderOpenPanel.allowsMultipleSelection = false
+        folderOpenPanel.prompt = "Use as Workspace"
+        folderOpenPanel.message = "Pick a folder for Clicky's agent to work in. Its CLAUDE.md, .claude settings and skills will apply."
+        guard folderOpenPanel.runModal() == .OK, let chosenDirectory = folderOpenPanel.url?.path else { return }
+        if !agentWorkspaceDirectories.contains(chosenDirectory) {
+            agentWorkspaceDirectories.append(chosenDirectory)
+            UserDefaults.standard.set(agentWorkspaceDirectories, forKey: Self.agentWorkspaceDirectoriesDefaultsKey)
+        }
+        selectAgentWorkspace(chosenDirectory)
+    }
+
+    /// Takes a folder off the list (its files and saved sessions are untouched).
+    func removeAgentWorkspace(_ workspaceDirectory: String) {
+        agentWorkspaceDirectories.removeAll { $0 == workspaceDirectory }
+        UserDefaults.standard.set(agentWorkspaceDirectories, forKey: Self.agentWorkspaceDirectoriesDefaultsKey)
+        if selectedAgentWorkspaceDirectory == workspaceDirectory {
+            selectAgentWorkspace(nil)
+        }
+    }
+
+    private var lastAgentSessionIdsByWorkspace: [String: String] {
+        get {
+            var sessionIdsByWorkspace = UserDefaults.standard.dictionary(forKey: Self.lastAgentSessionIdsDefaultsKey) as? [String: String] ?? [:]
+            if let legacySessionId = UserDefaults.standard.string(forKey: Self.legacyLastAgentSessionIdDefaultsKey) {
+                sessionIdsByWorkspace[""] = sessionIdsByWorkspace[""] ?? legacySessionId
+            }
+            return sessionIdsByWorkspace
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.lastAgentSessionIdsDefaultsKey)
+            UserDefaults.standard.removeObject(forKey: Self.legacyLastAgentSessionIdDefaultsKey)
+        }
+    }
+
+    /// The saved session for the selected workspace, which the next connection resumes.
+    private var lastAgentSessionIdForSelectedWorkspace: String? {
+        get { lastAgentSessionIdsByWorkspace[selectedAgentWorkspaceDirectory ?? ""] }
+        set { lastAgentSessionIdsByWorkspace[selectedAgentWorkspaceDirectory ?? ""] = newValue }
+    }
+
+    var isSparkVoiceConfigured: Bool {
+        sparkSpeechSentenceQueue != nil
+    }
+
+    /// Voices the Spark server offers, for the panel's pickers. Empty until
+    /// fetched, and for servers without a voice list (Miso).
+    @Published private(set) var availableSpeechVoiceNames: [String] = []
+
+    func refreshAvailableSpeechVoices() {
+        guard let sparkSpeechSentenceQueue else { return }
+        Task {
+            let voiceNames = await sparkSpeechSentenceQueue.fetchAvailableEnglishVoiceNames()
+            // Keep the current choice listed even if the server does not report it.
+            let currentVoiceName = tuningSettings.speechVoiceName
+            availableSpeechVoiceNames = voiceNames.isEmpty || voiceNames.contains(currentVoiceName)
+                ? voiceNames
+                : [currentVoiceName] + voiceNames
+        }
+    }
+
+    /// A question typed in the menu bar panel. It takes the same path as a
+    /// push-to-talk transcript (screenshot, pointing, and the answer in the
+    /// transcript card), so typing "yes" or "no" also answers a pending
+    /// permission question instead of interrupting the turn waiting on it.
+    func sendTypedQuestion(_ typedQuestion: String) {
+        let trimmedQuestion = typedQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuestion.isEmpty else { return }
+        handleFinalTranscript(trimmedQuestion)
+    }
+
+    /// Says a short line in the current voice settings, cutting off anything playing.
+    func previewSpeechVoice() {
+        stopAllSpeechImmediately()
+        enqueueSpokenNote("hey, this is how i sound with these settings.")
     }
 
     /// One-line sidecar state for the panel, e.g. "attached on port 47821".
@@ -151,6 +311,18 @@ final class CompanionManager: ObservableObject {
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
+    private var speakAnswersSettingCancellable: AnyCancellable?
+    private var menuBarPanelShownCancellable: AnyCancellable?
+
+    /// Clicky's saved conversations in the selected workspace, newest first,
+    /// for the menu bar panel's "Past" menu. Refreshed each time the panel opens.
+    @Published private(set) var pastConversations: [ConversationsListedPayload.PastConversation] = []
+    /// The id of the last `conversations.list` sent, so a late reply for an
+    /// earlier workspace is dropped.
+    private var pendingConversationListRequestId: String?
+    /// Set when a conversation is picked from the "Past" menu, so its history
+    /// brings the transcript card up. A resume at launch loads it quietly.
+    private var sessionIdOpenedFromPastMenu: String?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
@@ -239,6 +411,8 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        bindSpeakAnswersSetting()
+        bindMenuBarPanelShown()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -493,6 +667,27 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Turning "speak answers" off mid-answer silences it at once instead of
+    /// letting the queued sentences play out.
+    private func bindSpeakAnswersSetting() {
+        speakAnswersSettingCancellable = tuningSettings.$isSpeakingAnswersEnabled
+            .removeDuplicates()
+            .sink { [weak self] isSpeakingAnswersEnabled in
+                guard !isSpeakingAnswersEnabled else { return }
+                self?.stopAllSpeechImmediately()
+            }
+    }
+
+    /// The "Past" menu lists what is saved now, including the conversation
+    /// that just finished, so the list is fetched each time the panel opens.
+    private func bindMenuBarPanelShown() {
+        menuBarPanelShownCancellable = NotificationCenter.default
+            .publisher(for: .clickyPanelDidShow)
+            .sink { [weak self] _ in
+                self?.refreshPastConversations()
+            }
+    }
+
     private func bindAudioPowerLevel() {
         audioPowerCancellable = buddyDictationManager.$currentAudioPowerLevel
             .receive(on: DispatchQueue.main)
@@ -565,13 +760,19 @@ final class CompanionManager: ObservableObject {
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
-            // Cancel any in-progress response and TTS from a previous utterance.
-            // Cancelling the response task sends user.interrupt to the sidecar.
-            currentResponseTask?.cancel()
-            stopAllSpeechImmediately()
-            clearDetectedElementLocation()
-            transcriptPanelHideTask?.cancel()
-            transcriptPanelManager.fadeOutAndHide()
+            // Claude is waiting on a yes or no: this press is the answer, so keep
+            // the turn and the card, and only cut off the voice.
+            if !pendingAgentPermissions.isEmpty {
+                stopAllSpeechImmediately()
+            } else {
+                // Cancel any in-progress response and TTS from a previous utterance.
+                // Cancelling the response task sends user.interrupt to the sidecar.
+                currentResponseTask?.cancel()
+                stopAllSpeechImmediately()
+                clearDetectedElementLocation()
+                transcriptSpeechFinishedTask?.cancel()
+                // The card stays up while you speak; it hides only when you close it.
+            }
             // A sidecar turn holds .responding while it speaks; release it so
             // the listening waveform can take over.
             if voiceState == .responding {
@@ -603,7 +804,7 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.handleFinalTranscript(finalTranscript)
                     }
                 )
             }
@@ -667,8 +868,9 @@ final class CompanionManager: ObservableObject {
     /// this task, which a new push-to-talk press does, interrupts the turn.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
+        isCurrentAnswerSilenced = false
         stopAllSpeechImmediately()
-        transcriptPanelHideTask?.cancel()
+        transcriptSpeechFinishedTask?.cancel()
         transcriptPanelManager.beginTurn(userTranscript: transcript)
 
         currentResponseTask = Task {
@@ -712,7 +914,7 @@ final class CompanionManager: ObservableObject {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
                 transcriptPanelManager.markAnswerComplete()
-                scheduleTranscriptPanelHideAfterSpeech()
+                markTranscriptSpeechFinishedWhenVoiceStops()
             }
         }
     }
@@ -760,6 +962,7 @@ final class CompanionManager: ObservableObject {
             agentSidecarStatusText = "starting…"
             do {
                 let runningSidecar = try await sidecarProcessController.spawnSidecar(port: sidecarPort)
+                spawnedSidecarSharedToken = runningSidecar.sharedToken
                 _ = try await agentSidecarClient.connect(
                     port: runningSidecar.port,
                     sharedToken: runningSidecar.sharedToken,
@@ -772,13 +975,21 @@ final class CompanionManager: ObservableObject {
             connectionMode = .spawned
         }
 
+        // Pick up the last conversation, so Claude remembers it across relaunches.
+        // If the resume fails, handleAgentSessionFailure starts over fresh.
+        let resumeSessionId = lastAgentSessionIdForSelectedWorkspace
+        resumeSessionIdForCurrentConnection = resumeSessionId
         // Voice sessions use `default`: allow-listed tools run, edits ask.
-        try await agentSidecarClient.startSession(permissionMode: "default")
+        try await agentSidecarClient.startSession(
+            projectDirectory: selectedAgentWorkspaceDirectory,
+            permissionMode: "default",
+            resumeSessionId: resumeSessionId
+        )
         screenCaptureCountThisSession = 0
         lastScreenCaptureDate = nil
-        agentSidecarStatusText = connectionMode == .attached
+        agentSidecarStatusText = (connectionMode == .attached
             ? "attached on port \(sidecarPort)"
-            : "started on port \(sidecarPort)"
+            : "started on port \(sidecarPort)") + (resumeSessionId == nil ? "" : " · resumed")
         print("🧩 Agent sidecar \(agentSidecarStatusText)")
     }
 
@@ -795,7 +1006,9 @@ final class CompanionManager: ObservableObject {
         let maximumAttempts = 4
         for attemptNumber in 1...maximumAttempts {
             do {
-                _ = try await agentSidecarClient.connect(port: sidecarPort, sharedToken: nil, helloTimeoutSeconds: 2)
+                // A sidecar this app spawned earlier needs its token; one started
+                // from a terminal takes none (or reads its own from .env).
+                _ = try await agentSidecarClient.connect(port: sidecarPort, sharedToken: spawnedSidecarSharedToken, helloTimeoutSeconds: 2)
                 return
             } catch AgentSidecarClient.ConnectionError.helloRejected(let reason)
                         where reason.hasPrefix("client_already_connected") && attemptNumber < maximumAttempts {
@@ -844,6 +1057,8 @@ final class CompanionManager: ObservableObject {
     }
 
     private func finishAgentTurn(utteranceId: String) {
+        // Nothing can still be waiting on a permission once its turn is over.
+        clearPendingAgentPermissions()
         agentTurnCompletionContinuations.removeValue(forKey: utteranceId)?.resume()
     }
 
@@ -870,6 +1085,8 @@ final class CompanionManager: ObservableObject {
             if turnCompletePayload.utteranceId == currentAgentUtteranceId {
                 transcriptPanelManager.markAnswerComplete()
             }
+            // A turn finished, so a resumed session is known to work.
+            resumeSessionIdForCurrentConnection = nil
             finishAgentTurn(utteranceId: turnCompletePayload.utteranceId)
 
         case .overlayPointAt(let pointAtPayload):
@@ -898,16 +1115,11 @@ final class CompanionManager: ObservableObject {
             }
 
         case .permissionRequest(let permissionRequestPayload):
-            // Spoken permissions are chunk 6. Until then every request is
-            // declined at once rather than left to the sidecar's 30 s timeout.
-            print("🧩 Declining \(permissionRequestPayload.toolName): \"\(permissionRequestPayload.spokenSummary)\"")
-            Task {
-                try? await agentSidecarClient.sendPermissionDecision(
-                    permissionRequestId: permissionRequestPayload.permissionRequestId,
-                    decision: "deny",
-                    denialReason: "the voice app cannot ask for permission yet, so it declined automatically"
-                )
-            }
+            print("🧩 Asking about \(permissionRequestPayload.toolName): \"\(permissionRequestPayload.spokenSummary)\"")
+            queueAgentPermissionQuestion(
+                permissionRequestId: permissionRequestPayload.permissionRequestId,
+                spokenQuestion: permissionRequestPayload.spokenSummary
+            )
 
         case .error(let errorPayload):
             if let utteranceId = errorPayload.utteranceId {
@@ -919,8 +1131,32 @@ final class CompanionManager: ObservableObject {
                 agentSidecarStatusText = "error: \(errorPayload.code)"
                 finishAgentTurn(utteranceId: currentAgentUtteranceId)
             }
+            if errorPayload.code == "session_failed" {
+                handleAgentSessionFailure()
+            }
 
-        case .sessionReady, .agentStatus, .sidecarHello, .ignored:
+        case .sessionReady(let sessionReadyPayload):
+            // Remembered so the next launch resumes this workspace's conversation.
+            lastAgentSessionIdForSelectedWorkspace = sessionReadyPayload.sessionId
+            activeAgentProjectDirectory = sessionReadyPayload.projectDirectory
+
+        case .conversationsListed(let conversationsListedPayload):
+            guard conversationsListedPayload.requestId == pendingConversationListRequestId else { return }
+            pendingConversationListRequestId = nil
+            pastConversations = conversationsListedPayload.conversations
+
+        case .sessionHistory(let sessionHistoryPayload):
+            // Only for the session this connection resumed; the sidecar sends
+            // it right after session.start.
+            guard sessionHistoryPayload.sessionId == resumeSessionIdForCurrentConnection else { return }
+            let isOpenedFromPastMenu = sessionHistoryPayload.sessionId == sessionIdOpenedFromPastMenu
+            sessionIdOpenedFromPastMenu = nil
+            transcriptPanelManager.replaceConversation(
+                withEarlierExchanges: sessionHistoryPayload.exchanges.map { ($0.question, $0.answer) },
+                isShowingCard: isOpenedFromPastMenu
+            )
+
+        case .agentStatus, .sidecarHello, .ignored:
             // Logged by the client; the spinner is driven by voiceState instead.
             break
         }
@@ -1079,27 +1315,241 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Keeps the transcript panel up until the voice has said everything, then
-    /// fades it after a pause long enough to finish reading. A new push-to-talk
-    /// press or utterance cancels this.
-    private func scheduleTranscriptPanelHideAfterSpeech() {
-        transcriptPanelHideTask?.cancel()
-        transcriptPanelHideTask = Task {
+    // MARK: - Spoken Permissions (chunk 6)
+
+    /// A push-to-talk transcript is the answer to Claude's question when one is
+    /// waiting, and a new question otherwise.
+    private func handleFinalTranscript(_ finalTranscript: String) {
+        if let askedPermission = pendingAgentPermissions.first {
+            let isAllowed = SpokenPermissionAnswer.isAffirmative(finalTranscript)
+            print("🧩 Permission answer \"\(finalTranscript)\" → \(isAllowed ? "allow" : "deny")")
+            answerAgentPermission(
+                permissionRequestId: askedPermission.permissionRequestId,
+                isAllowed: isAllowed,
+                denialReason: "asked \"\(askedPermission.spokenQuestion)\", the user said \"\(finalTranscript)\""
+            )
+            return
+        }
+        sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+    }
+
+    /// Claude asked to use a tool. The question is spoken after whatever is
+    /// already queued and shown on the transcript card; the answer comes from
+    /// the next push-to-talk or the card's buttons. The mic never opens by
+    /// itself for this.
+    private func queueAgentPermissionQuestion(permissionRequestId: String, spokenQuestion: String) {
+        let expiryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.permissionAnswerWindowNanoseconds)
+            guard !Task.isCancelled else { return }
+            // The sidecar has denied it by now; just take it off the card.
+            self?.removePendingAgentPermission(permissionRequestId: permissionRequestId)
+        }
+        pendingAgentPermissions.append(PendingAgentPermission(
+            permissionRequestId: permissionRequestId,
+            spokenQuestion: spokenQuestion,
+            expiryTask: expiryTask
+        ))
+        if pendingAgentPermissions.count == 1 {
+            askFirstPendingAgentPermission()
+        }
+    }
+
+    private func askFirstPendingAgentPermission() {
+        guard let askedPermission = pendingAgentPermissions.first else {
+            transcriptPanelManager.clearPermissionQuestion()
+            return
+        }
+        transcriptPanelManager.showPermissionQuestion(
+            permissionRequestId: askedPermission.permissionRequestId,
+            question: askedPermission.spokenQuestion,
+            answerHint: "hold \(BuddyPushToTalkShortcut.pushToTalkDisplayText) and say yes or no, or type it below"
+        )
+        if tuningSettings.isSpeakingAnswersEnabled {
+            enqueueSpokenNote(askedPermission.spokenQuestion)
+        }
+    }
+
+    private func answerAgentPermission(permissionRequestId: String, isAllowed: Bool, denialReason: String) {
+        guard pendingAgentPermissions.contains(where: { $0.permissionRequestId == permissionRequestId }) else { return }
+        removePendingAgentPermission(permissionRequestId: permissionRequestId)
+        Task {
+            do {
+                try await agentSidecarClient.sendPermissionDecision(
+                    permissionRequestId: permissionRequestId,
+                    decision: isAllowed ? "allow" : "deny",
+                    denialReason: isAllowed ? nil : denialReason
+                )
+            } catch {
+                print("⚠️ Could not send the permission answer: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func removePendingAgentPermission(permissionRequestId: String) {
+        guard let pendingIndex = pendingAgentPermissions.firstIndex(where: { $0.permissionRequestId == permissionRequestId }) else { return }
+        pendingAgentPermissions[pendingIndex].expiryTask.cancel()
+        pendingAgentPermissions.remove(at: pendingIndex)
+        if pendingIndex == 0 {
+            askFirstPendingAgentPermission()
+        }
+    }
+
+    private func clearPendingAgentPermissions() {
+        pendingAgentPermissions.forEach { $0.expiryTask.cancel() }
+        pendingAgentPermissions.removeAll()
+        transcriptPanelManager.clearPermissionQuestion()
+    }
+
+    // MARK: - Conversations
+
+    /// Forgets the remembered session and ends the current one, so the next
+    /// push-to-talk starts a fresh conversation with a fresh transcript.
+    func startNewConversation() {
+        lastAgentSessionIdForSelectedWorkspace = nil
+        endAgentSessionForNextQuestion(statusText: "new conversation on your next question")
+    }
+
+    /// The session the next question goes to, to tick it in the "Past" menu.
+    var currentConversationSessionId: String? {
+        lastAgentSessionIdForSelectedWorkspace
+    }
+
+    /// Asks the sidecar for this workspace's saved conversations; the reply
+    /// fills `pastConversations`. Connects first if needed, as a question would.
+    func refreshPastConversations() {
+        Task {
+            do {
+                try await ensureAgentSidecarSession()
+                let requestId = UUID().uuidString
+                pendingConversationListRequestId = requestId
+                try await agentSidecarClient.requestConversationList(
+                    requestId: requestId,
+                    projectDirectory: selectedAgentWorkspaceDirectory
+                )
+            } catch {
+                print("⚠️ Could not list past conversations: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Resumes a saved conversation: the next question continues it, and the
+    /// transcript card comes up with its recent exchanges. Ends whatever is
+    /// running now, like "New" does.
+    func openPastConversation(sessionId: String) {
+        let pastConversationTitle = pastConversations.first(where: { $0.sessionId == sessionId })?.title
+        lastAgentSessionIdForSelectedWorkspace = sessionId
+        sessionIdOpenedFromPastMenu = sessionId
+        endAgentSessionForNextQuestion(statusText: "reopening \(pastConversationTitle ?? "a past conversation")")
+        // Reconnect now rather than on the next question, so the history shows straight away.
+        Task {
+            do {
+                try await ensureAgentSidecarSession()
+            } catch {
+                print("⚠️ Could not reopen the past conversation: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Stops the current turn and closes the sidecar connection, which ends its
+    /// session; the next push-to-talk reconnects and starts (or resumes) one.
+    private func endAgentSessionForNextQuestion(statusText: String) {
+        currentResponseTask?.cancel()
+        stopAllSpeechImmediately()
+        clearDetectedElementLocation()
+        transcriptSpeechFinishedTask?.cancel()
+        transcriptPanelManager.clearConversation()
+        transcriptPanelManager.fadeOutAndHide()
+        resumeSessionIdForCurrentConnection = nil
+        activeAgentProjectDirectory = nil
+        agentSidecarClient.disconnect()
+        agentSidecarStatusText = statusText
+    }
+
+    /// The agent session died. If it was a resume (the saved session may be
+    /// gone or unreadable), forget it and reconnect fresh on the next turn
+    /// rather than failing the same way every time.
+    private func handleAgentSessionFailure() {
+        guard resumeSessionIdForCurrentConnection != nil else { return }
+        print("🧩 Resuming the last agent session failed; the next question starts a new one")
+        lastAgentSessionIdForSelectedWorkspace = nil
+        resumeSessionIdForCurrentConnection = nil
+        agentSidecarClient.disconnect()
+        agentSidecarStatusText = "couldn't resume; new conversation on your next question"
+    }
+
+    /// Settles the transcript card (no speaking highlight, no dimmed lines)
+    /// once the voice has said everything. The card itself stays up until you
+    /// close it. A new push-to-talk press or question cancels this.
+    private func markTranscriptSpeechFinishedWhenVoiceStops() {
+        transcriptSpeechFinishedTask?.cancel()
+        transcriptSpeechFinishedTask = Task {
             while isAnySpeechPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
             transcriptPanelManager.markSpeechFinished()
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
-            guard !Task.isCancelled else { return }
-            transcriptPanelManager.fadeOutAndHide()
         }
     }
 
-    /// Says out loud that a voice turn failed, so a broken sidecar is never silent.
+    // MARK: - Replaying From the Transcript Card
+
+    /// A clicked line of the current answer, or the whole answer from the
+    /// header's play button, spoken again with the speaking highlight. It is
+    /// spoken even with "speak answers" off, since you asked for it.
+    private func replayCurrentAnswerSentences(onlySentenceIndex: Int?) {
+        let sentencesToReplay = transcriptPanelManager.currentAnswerSentences.filter { answerSentence in
+            onlySentenceIndex == nil || answerSentence.sentenceIndex == onlySentenceIndex
+        }
+        guard !sentencesToReplay.isEmpty else { return }
+        stopAllSpeechImmediately()
+        transcriptPanelManager.beginReplayOfCurrentAnswer()
+        for sentenceToReplay in sentencesToReplay {
+            enqueueSentenceInAnswerVoice(sentenceToReplay.text, sentenceIndex: sentenceToReplay.sentenceIndex)
+        }
+        markTranscriptSpeechFinishedWhenVoiceStops()
+    }
+
+    /// A clicked earlier answer. Stored as one string, so it is split back
+    /// into sentences for the voice (which speaks sentence by sentence).
+    private func replayEarlierAnswer(_ earlierAnswerText: String) {
+        var earlierAnswerSentences: [String] = []
+        earlierAnswerText.enumerateSubstrings(
+            in: earlierAnswerText.startIndex..<earlierAnswerText.endIndex,
+            options: .bySentences
+        ) { sentenceText, _, _, _ in
+            if let trimmedSentence = sentenceText?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmedSentence.isEmpty {
+                earlierAnswerSentences.append(trimmedSentence)
+            }
+        }
+        guard !earlierAnswerSentences.isEmpty else { return }
+        stopAllSpeechImmediately()
+        transcriptPanelManager.beginReplayOfEarlierAnswer()
+        for earlierAnswerSentence in earlierAnswerSentences {
+            enqueueSentenceInAnswerVoice(earlierAnswerSentence, sentenceIndex: nil)
+        }
+        markTranscriptSpeechFinishedWhenVoiceStops()
+    }
+
+    /// The card's stop button: silence now, and if the answer is still
+    /// arriving, show the rest of it without speaking it.
+    private func stopSpeakingFromTranscriptCard() {
+        if currentAgentUtteranceId != nil {
+            isCurrentAnswerSilenced = true
+        }
+        stopAllSpeechImmediately()
+        transcriptSpeechFinishedTask?.cancel()
+        transcriptPanelManager.markSpeechFinished()
+    }
+
+    /// Says out loud that a turn failed, so a broken sidecar is never silent;
+    /// with "speak answers" off, writes it on the transcript card instead.
     /// The detail goes to the Xcode console.
     private func speakAgentErrorFallback(spokenExplanation: String) {
         stopAllSpeechImmediately()
+        guard tuningSettings.isSpeakingAnswersEnabled else {
+            transcriptPanelManager.appendNote(spokenExplanation)
+            return
+        }
         systemSpeechSentenceQueue.enqueueSentence(spokenExplanation)
     }
 
@@ -1107,10 +1557,29 @@ final class CompanionManager: ObservableObject {
 
     /// Answers go to the Spark voice when configured, otherwise the macOS voice.
     private func enqueueAssistantSentenceForSpeech(_ sentenceText: String, sentenceIndex: Int) {
+        // Skip the queue entirely rather than mute it: the transcript card's
+        // highlight and fade follow the queue's playback.
+        guard tuningSettings.isSpeakingAnswersEnabled, !isCurrentAnswerSilenced else { return }
+        enqueueSentenceInAnswerVoice(sentenceText, sentenceIndex: sentenceIndex)
+    }
+
+    /// The Spark voice when configured, otherwise the macOS voice. A sentence
+    /// index lets the transcript card highlight the line as it plays.
+    private func enqueueSentenceInAnswerVoice(_ sentenceText: String, sentenceIndex: Int?) {
         if let sparkSpeechSentenceQueue {
             sparkSpeechSentenceQueue.enqueueSentence(sentenceText, sentenceIndex: sentenceIndex)
         } else {
             systemSpeechSentenceQueue.enqueueSentence(sentenceText, sentenceIndex: sentenceIndex)
+        }
+    }
+
+    /// Speaks a line that is not part of Claude's answer (a preview, a permission
+    /// question), after anything already queued, in the answer voice.
+    private func enqueueSpokenNote(_ noteText: String) {
+        if let sparkSpeechSentenceQueue {
+            sparkSpeechSentenceQueue.enqueueSentence(noteText)
+        } else {
+            systemSpeechSentenceQueue.enqueueSentence(noteText)
         }
     }
 

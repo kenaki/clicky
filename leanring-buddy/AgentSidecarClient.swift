@@ -102,8 +102,9 @@ final class AgentSidecarClient {
 
     // MARK: - Sending
 
-    func startSession(permissionMode: String) async throws {
-        try await send(type: "session.start", payload: SessionStartPayload(projectDirectory: nil, resumeSessionId: nil, permissionMode: permissionMode))
+    /// `projectDirectory` nil lets the sidecar use its own (`CLICKY_PROJECT_DIRECTORY`).
+    func startSession(projectDirectory: String?, permissionMode: String, resumeSessionId: String?) async throws {
+        try await send(type: "session.start", payload: SessionStartPayload(projectDirectory: projectDirectory, resumeSessionId: resumeSessionId, permissionMode: permissionMode))
     }
 
     func sendUtterance(utteranceId: String, transcript: String, screenshots: [AgentSidecarScreenshot]) async throws {
@@ -120,6 +121,11 @@ final class AgentSidecarClient {
 
     func sendPermissionDecision(permissionRequestId: String, decision: String, denialReason: String?) async throws {
         try await send(type: "permission.decision", payload: PermissionDecisionPayload(permissionRequestId: permissionRequestId, decision: decision, denialReason: denialReason))
+    }
+
+    /// The reply arrives as `.conversationsListed` with the same `requestId`.
+    func requestConversationList(requestId: String, projectDirectory: String?) async throws {
+        try await send(type: "conversations.list", payload: ConversationsListPayload(requestId: requestId, projectDirectory: projectDirectory))
     }
 
     private func send<Payload: Encodable>(type: String, payload: Payload) async throws {
@@ -182,6 +188,8 @@ final class AgentSidecarClient {
         switch message {
         case .sidecarHello: return "sidecar.hello"
         case .sessionReady(let payload): return "session.ready \(payload.sessionId) in \(payload.projectDirectory)"
+        case .sessionHistory(let payload): return "session.history \(payload.exchanges.count) exchanges"
+        case .conversationsListed(let payload): return "conversations.listed \(payload.conversations.count)"
         case .agentStatus(let payload): return "agent.status \(payload.phase) \(payload.toolName ?? "")"
         case .assistantSentence(let payload): return "assistant.sentence #\(payload.sentenceIndex)"
         case .assistantTurnComplete(let payload): return "assistant.turn_complete \(Int(payload.durationMs)) ms"

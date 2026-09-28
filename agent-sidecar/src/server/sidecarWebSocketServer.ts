@@ -6,6 +6,7 @@
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { AgentSession } from "../agent/agentSession.js";
+import { listPastConversations, loadConversationExchanges } from "../agent/pastConversations.js";
 import { describeUnknownError, ProtocolError, SessionError, SidecarError } from "../protocol/errors.js";
 import {
   createOutgoingMessage,
@@ -28,6 +29,7 @@ export interface SidecarWebSocketServerOptions {
   model: string;
   effort: EffortLevel;
   persistSessions: boolean;
+  sandboxCommands: boolean;
   logger: Logger;
   screenshotTimeoutMs?: number;
   permissionTimeoutMs?: number;
@@ -37,6 +39,10 @@ export interface SidecarWebSocketServerOptions {
 
 const DEFAULT_SCREENSHOT_TIMEOUT_MS = 5_000;
 const DEFAULT_PERMISSION_TIMEOUT_MS = 30_000;
+/** How many conversations the menu bar's "Past" menu offers. */
+const MAXIMUM_LISTED_CONVERSATION_COUNT = 20;
+/** The transcript card keeps this many earlier exchanges (CompanionTranscriptPanel.swift). */
+const MAXIMUM_RESUMED_EXCHANGE_COUNT = 12;
 
 class ClientConnection {
   private hasSaidHello = false;
@@ -115,17 +121,29 @@ class ClientConnection {
           screenshotTimeoutMs: this.serverOptions.screenshotTimeoutMs ?? DEFAULT_SCREENSHOT_TIMEOUT_MS,
           permissionTimeoutMs: this.serverOptions.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
         });
+        const projectDirectory = message.payload.projectDirectory ?? this.serverOptions.defaultProjectDirectory;
         this.session = new AgentSession({
-          projectDirectory: message.payload.projectDirectory ?? this.serverOptions.defaultProjectDirectory,
+          projectDirectory,
           permissionMode: message.payload.permissionMode,
           resumeSessionId: message.payload.resumeSessionId,
           model: this.serverOptions.model,
           effort: this.serverOptions.effort,
           persistSessions: this.serverOptions.persistSessions,
+          sandboxCommands: this.serverOptions.sandboxCommands,
           host: this.sessionHost,
           logger: this.logger.child("session")
         });
         this.session.start();
+        if (message.payload.resumeSessionId !== undefined) {
+          void this.sendResumedSessionHistory(message.payload.resumeSessionId, projectDirectory);
+        }
+        return;
+      }
+
+      case "conversations.list": {
+        const projectDirectory = message.payload.projectDirectory ?? this.serverOptions.defaultProjectDirectory;
+        const conversations = await listPastConversations(projectDirectory, MAXIMUM_LISTED_CONVERSATION_COUNT);
+        this.send("conversations.listed", { requestId: message.payload.requestId, projectDirectory, conversations });
         return;
       }
 
@@ -156,6 +174,20 @@ class ClientConnection {
         host.deliverScreenshots(message.payload.screenshotRequestId, message.payload.screenshots);
         return;
       }
+    }
+  }
+
+  /**
+   * Lets the app refill its transcript card with a reopened conversation. The
+   * card is only a convenience, so a session file that cannot be read is
+   * logged and skipped; the resume itself carries on either way.
+   */
+  private async sendResumedSessionHistory(sessionId: string, projectDirectory: string): Promise<void> {
+    try {
+      const exchanges = await loadConversationExchanges(sessionId, projectDirectory, MAXIMUM_RESUMED_EXCHANGE_COUNT);
+      this.send("session.history", { sessionId, exchanges });
+    } catch (error) {
+      this.logger.warn("could not read the resumed session's history", { sessionId, error: describeUnknownError(error) });
     }
   }
 

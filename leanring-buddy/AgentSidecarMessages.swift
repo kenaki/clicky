@@ -66,6 +66,13 @@ struct ScreenshotCapturedPayload: Encodable {
     let screenshots: [AgentSidecarScreenshot]
 }
 
+/// Asks for Clicky's saved conversations in a directory; allowed before `session.start`.
+struct ConversationsListPayload: Encodable {
+    let requestId: String
+    /// Nil lists the sidecar's own directory, as for `session.start`.
+    let projectDirectory: String?
+}
+
 /// Every outgoing message is wrapped in the versioned envelope.
 struct OutgoingAgentSidecarEnvelope<Payload: Encodable>: Encodable {
     let protocolVersion: Int
@@ -94,6 +101,33 @@ struct SessionReadyPayload: Decodable {
     let sessionId: String
     let projectDirectory: String
     let model: String?
+}
+
+/// A reopened session's recent question and answer pairs, oldest first.
+struct SessionHistoryPayload: Decodable {
+    struct Exchange: Decodable {
+        let question: String
+        let answer: String
+    }
+
+    let sessionId: String
+    let exchanges: [Exchange]
+}
+
+/// Reply to `conversations.list`, newest first.
+struct ConversationsListedPayload: Decodable {
+    struct PastConversation: Decodable, Identifiable {
+        let sessionId: String
+        let title: String
+        let lastModifiedMs: Double
+
+        var id: String { sessionId }
+        var lastModifiedDate: Date { Date(timeIntervalSince1970: lastModifiedMs / 1000) }
+    }
+
+    let requestId: String
+    let projectDirectory: String
+    let conversations: [PastConversation]
 }
 
 struct AgentStatusPayload: Decodable {
@@ -156,6 +190,8 @@ struct SidecarErrorPayload: Decodable {
 enum IncomingAgentSidecarMessage {
     case sidecarHello(SidecarHelloPayload)
     case sessionReady(SessionReadyPayload)
+    case sessionHistory(SessionHistoryPayload)
+    case conversationsListed(ConversationsListedPayload)
     case agentStatus(AgentStatusPayload)
     case assistantSentence(AssistantSentencePayload)
     case assistantTurnComplete(AssistantTurnCompletePayload)
@@ -189,6 +225,8 @@ enum IncomingAgentSidecarMessage {
         switch envelopeHeader.type {
         case "sidecar.hello": message = .sidecarHello(try decodePayload(SidecarHelloPayload.self))
         case "session.ready": message = .sessionReady(try decodePayload(SessionReadyPayload.self))
+        case "session.history": message = .sessionHistory(try decodePayload(SessionHistoryPayload.self))
+        case "conversations.listed": message = .conversationsListed(try decodePayload(ConversationsListedPayload.self))
         case "agent.status": message = .agentStatus(try decodePayload(AgentStatusPayload.self))
         case "assistant.sentence": message = .assistantSentence(try decodePayload(AssistantSentencePayload.self))
         case "assistant.turn_complete": message = .assistantTurnComplete(try decodePayload(AssistantTurnCompletePayload.self))

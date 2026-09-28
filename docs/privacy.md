@@ -38,8 +38,9 @@ name, which is the absolute path with every non-alphanumeric character replaced 
 | `/private/tmp/claude-<uid>/<encoded project dir>/<session id>/images/N.jpg` | Claude Code | The same screenshots extracted as files. | Same switch; nothing is extracted for an unpersisted session. Deleted by `npm run privacy:clean`. |
 | `$TMPDIR/clicky-spike-*.jpg` | The spike, before 2026-09-27 | Raw captures the first spike version forgot to delete. | Fixed: captures are deleted before the spike continues. `npm run privacy:clean` removes old ones. |
 
-The Swift app writes nothing. Upstream's `CompanionScreenCaptureUtility` keeps JPEG data in
-memory and hands it to the API client.
+The Swift app writes no captures or transcript text. Upstream's `CompanionScreenCaptureUtility`
+keeps JPEG data in memory and hands it to the API client. The only thing it stores about a
+conversation is the session id (see Sessions).
 
 ## Commands
 
@@ -75,6 +76,38 @@ persona says so first). No setting can make a capture silent and invisible at th
 
 In the spikes today: the capture is announced on stdout and the macOS shutter sound is not
 suppressed.
+
+## Sessions
+
+Added 2026-09-28. The app remembers the last agent session id in its user defaults
+(`AgentSidecarLastSessionId`) and asks the sidecar to resume it on the next launch, so Claude
+remembers the conversation. Resuming sends that session's history, screenshots included, back to
+Claude as context, the same as every later turn within one session already does. It works only
+while the transcript above exists (`CLICKY_PERSIST_SESSIONS=true`); if the resume fails, the id is
+forgotten and a fresh session starts. "New" beside Conversation in the menu bar panel forgets the
+id and ends the session. The transcript panel keeps this run's text in memory only.
+
+"Past" beside Conversation lists the workspace's saved Clicky sessions: the sidecar reads their
+titles from the transcripts above (read-only, through the SDK's `listSessions`) and sends only the
+titles and dates to the app over localhost. Reopening one resumes it as above, and the sidecar also
+reads its last 12 question and answer texts (no screenshots) to show on the transcript card. The
+same text is loaded quietly when the app resumes at launch. Nothing new is written anywhere.
+
+## Workspaces and folders the agent must never read
+
+Added 2026-09-28. The agent works in the folder picked under Workspace in the menu bar panel, and
+that folder's `.claude/settings.json` applies. A folder with private data inside a workspace
+needs two things, both verified on a decoy folder with Claude Code 2.1.282:
+
+1. A deny rule in the workspace's `.claude/settings.json`, e.g. `"Read(/phi_do_not_read/**)"`
+   (a leading `/` anchors at the workspace). This stops the Read tool only.
+2. The sandbox, which the sidecar turns on for every voice session (`CLICKY_SANDBOX_COMMANDS`,
+   default true, no escape hatch). Claude Code searches with shell `grep -r`, `find` and `cat`,
+   and read-only commands run without asking; without the sandbox, `grep -r` from the workspace
+   root printed the decoy's contents. With it, those commands get "Operation not permitted".
+
+`~/vitalcue/researchML` has both for `phi_do_not_read/`. Screenshots are separate: the agent sees
+whatever is on screen when you ask.
 
 ## Your session with Claude Code
 

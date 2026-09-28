@@ -29,6 +29,14 @@ describe("parseIncomingMessage", () => {
     expect(message.payload.permissionMode).toBe("default");
   });
 
+  it("parses a conversations.list with or without a project directory, and needs a request id", () => {
+    const message = parseIncomingMessage(envelope("conversations.list", { requestId: "r-1" }));
+    expect(message.type).toBe("conversations.list");
+    if (message.type !== "conversations.list") throw new Error("unexpected type");
+    expect(message.payload.projectDirectory).toBeUndefined();
+    expect(() => parseIncomingMessage(envelope("conversations.list", {}))).toThrowError(/requestId/);
+  });
+
   it("rejects an unknown message type with a malformed_message code", () => {
     expect(() => parseIncomingMessage(envelope("nope.nothing", {}))).toThrowError(ProtocolError);
     try {

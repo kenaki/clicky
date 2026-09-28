@@ -13,6 +13,7 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isPastConversationsMenuHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,10 +30,23 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 12)
 
+                CompanionAskClickyRow(
+                    companionManager: companionManager,
+                    tuningSettings: companionManager.tuningSettings
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+
                 modelPickerRow
                     .padding(.horizontal, 16)
 
                 agentSidecarStatusRow
+                    .padding(.horizontal, 16)
+
+                workspaceRow
+                    .padding(.horizontal, 16)
+
+                conversationRow
                     .padding(.horizontal, 16)
 
                 screenCaptureStatusRow
@@ -40,6 +54,17 @@ struct CompanionPanelView: View {
 
                 speechVoiceStatusRow
                     .padding(.horizontal, 16)
+
+                Divider()
+                    .background(DS.Colors.borderSubtle)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+
+                CompanionTuningSectionView(
+                    companionManager: companionManager,
+                    tuningSettings: companionManager.tuningSettings
+                )
+                .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -677,6 +702,194 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
+    /// The folder the agent works in; its CLAUDE.md, settings and skills apply.
+    private var workspaceRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Workspace")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Menu {
+                Button(action: { companionManager.selectAgentWorkspace(nil) }) {
+                    workspaceMenuLabel(title: "Sidecar default", isSelected: companionManager.selectedAgentWorkspaceDirectory == nil)
+                }
+                if !companionManager.agentWorkspaceDirectories.isEmpty {
+                    Divider()
+                }
+                ForEach(companionManager.agentWorkspaceDirectories, id: \.self) { workspaceDirectory in
+                    Button(action: { companionManager.selectAgentWorkspace(workspaceDirectory) }) {
+                        workspaceMenuLabel(
+                            title: URL(fileURLWithPath: workspaceDirectory).lastPathComponent,
+                            isSelected: companionManager.selectedAgentWorkspaceDirectory == workspaceDirectory
+                        )
+                    }
+                    .help(workspaceDirectory)
+                }
+                Divider()
+                Button("Add Folder…") {
+                    companionManager.addAgentWorkspaceFromOpenPanel()
+                }
+                if let selectedAgentWorkspaceDirectory = companionManager.selectedAgentWorkspaceDirectory {
+                    Button("Remove \(URL(fileURLWithPath: selectedAgentWorkspaceDirectory).lastPathComponent) from List") {
+                        companionManager.removeAgentWorkspace(selectedAgentWorkspaceDirectory)
+                    }
+                }
+            } label: {
+                Text(selectedWorkspaceDisplayName)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textPrimary)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.visible)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+            .help(companionManager.activeAgentProjectDirectory ?? companionManager.selectedAgentWorkspaceDirectory ?? "the sidecar's CLICKY_PROJECT_DIRECTORY")
+            .pointerCursor()
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func workspaceMenuLabel(title: String, isSelected: Bool) -> some View {
+        if isSelected {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
+        }
+    }
+
+    private var selectedWorkspaceDisplayName: String {
+        if let selectedAgentWorkspaceDirectory = companionManager.selectedAgentWorkspaceDirectory {
+            return URL(fileURLWithPath: selectedAgentWorkspaceDirectory).lastPathComponent
+        }
+        if let activeAgentProjectDirectory = companionManager.activeAgentProjectDirectory {
+            return URL(fileURLWithPath: activeAgentProjectDirectory).lastPathComponent
+        }
+        return "Sidecar default"
+    }
+
+    /// The conversation carries over between questions and relaunches; this
+    /// starts a fresh one (docs/privacy.md, "Sessions").
+    private var conversationRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Conversation")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            pastConversationsMenu
+
+            Button(action: {
+                companionManager.startNewConversation()
+            }) {
+                HStack(spacing: 5) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text("New")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(DS.Colors.textSecondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Clicky's saved conversations in this workspace (refreshed each time the
+    /// panel opens). Picking one resumes it and brings up its transcript.
+    private var pastConversationsMenu: some View {
+        Menu {
+            if companionManager.pastConversations.isEmpty {
+                Text("No saved conversations in this workspace")
+            }
+            ForEach(companionManager.pastConversations) { pastConversation in
+                Button(action: {
+                    companionManager.openPastConversation(sessionId: pastConversation.sessionId)
+                }) {
+                    pastConversationMenuLabel(pastConversation)
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 9, weight: .semibold))
+                Text("Past")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundColor(isPastConversationsMenuHovered ? DS.Colors.textPrimary : DS.Colors.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(isPastConversationsMenuHovered ? 0.1 : 0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .pointerCursor()
+        .onHover { isHovering in isPastConversationsMenuHovered = isHovering }
+        .help("Reopen a past conversation")
+    }
+
+    /// Title and how long ago, with a tick on the conversation the next question goes to.
+    @ViewBuilder
+    private func pastConversationMenuLabel(_ pastConversation: ConversationsListedPayload.PastConversation) -> some View {
+        let relativeAge = Self.pastConversationAgeFormatter.localizedString(for: pastConversation.lastModifiedDate, relativeTo: Date())
+        if pastConversation.sessionId == companionManager.currentConversationSessionId {
+            Label("\(pastConversation.title) · \(relativeAge)", systemImage: "checkmark")
+        } else {
+            Text("\(pastConversation.title) · \(relativeAge)")
+        }
+    }
+
+    private static let pastConversationAgeFormatter: RelativeDateTimeFormatter = {
+        let relativeDateTimeFormatter = RelativeDateTimeFormatter()
+        relativeDateTimeFormatter.unitsStyle = .short
+        return relativeDateTimeFormatter
+    }()
+
     /// How many screenshots the agent session has received and when the last
     /// one was taken, so no capture goes unnoticed (docs/privacy.md).
     private var screenCaptureStatusRow: some View {
@@ -701,7 +914,7 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    /// Which voice speaks answers: Miso on the Spark, or the macOS fallback.
+    /// Which voice server speaks answers: the Spark (Kokoro or Miso), or the macOS fallback.
     private var speechVoiceStatusRow: some View {
         HStack {
             HStack(spacing: 8) {

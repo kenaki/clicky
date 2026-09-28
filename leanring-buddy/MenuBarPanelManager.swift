@@ -16,6 +16,8 @@ import SwiftUI
 
 extension Notification.Name {
     static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    /// Posted after the panel is shown and key, so the "Ask Clicky" field can take focus.
+    static let clickyPanelDidShow = Notification.Name("clickyPanelDidShow")
 }
 
 /// Custom NSPanel subclass that can become the key window even with
@@ -136,6 +138,7 @@ final class MenuBarPanelManager: NSObject {
         panel?.makeKeyAndOrderFront(nil)
         panel?.orderFrontRegardless()
         installClickOutsideMonitor()
+        NotificationCenter.default.post(name: .clickyPanelDidShow, object: nil)
     }
 
     private func hidePanel() {
