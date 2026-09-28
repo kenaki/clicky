@@ -161,6 +161,9 @@ struct BlueCursorView: View {
     /// Starts at 0.5 and springs to 1.0 when the first character appears.
     @State private var navigationBubbleScale: CGFloat = 1.0
 
+    /// Opacity of the capture border flash; jumps to 1 on every screen capture, then fades.
+    @State private var screenCaptureFlashOpacity: Double = 0.0
+
     /// True when the buddy is flying BACK to the cursor after pointing.
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
@@ -185,6 +188,14 @@ struct BlueCursorView: View {
         ZStack {
             // Nearly transparent background (helps with compositing)
             Color.black.opacity(0.001)
+
+            // Capture indicator, part 1: a brief border flash on every display
+            // at the instant of a screen capture (docs/privacy.md). Captures
+            // exclude this app's windows, so the flash never lands in a screenshot.
+            Rectangle()
+                .strokeBorder(DS.Colors.overlayCursorBlue, lineWidth: 5)
+                .opacity(screenCaptureFlashOpacity)
+                .allowsHitTesting(false)
 
             // Welcome speech bubble (first launch only)
             if isCursorOnThisScreen && showWelcome && !welcomeText.isEmpty {
@@ -329,6 +340,23 @@ struct BlueCursorView: View {
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
+            // Capture indicator, part 2: a camera badge beside the buddy while a
+            // screenshot is in flight, so an agent-initiated capture is never silent.
+            Image(systemName: "camera.fill")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(.white)
+                .frame(width: 16, height: 16)
+                .background(
+                    Circle()
+                        .fill(DS.Colors.overlayCursorBlue)
+                        .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 4, x: 0, y: 0)
+                )
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.isScreenCaptureInFlight ? 1.0 : 0.0)
+                .position(x: cursorPosition.x + 14, y: cursorPosition.y - 14)
+                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
+                .animation(.easeOut(duration: 0.2), value: companionManager.isScreenCaptureInFlight)
+                .allowsHitTesting(false)
+
             // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
             BlueCursorSpinnerView()
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
@@ -383,6 +411,17 @@ struct BlueCursorView: View {
             }
 
             startNavigatingToElement(screenLocation: screenLocation)
+        }
+        .onChange(of: companionManager.screenCaptureFlashCount) { _, _ in
+            // Snap on, then fade, in two steps so SwiftUI doesn't collapse them into no change.
+            withAnimation(.easeIn(duration: 0.08)) {
+                screenCaptureFlashOpacity = 1.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                withAnimation(.easeOut(duration: 0.6)) {
+                    screenCaptureFlashOpacity = 0.0
+                }
+            }
         }
     }
 

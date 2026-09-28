@@ -70,11 +70,14 @@ These are the exact places the new pieces attach. Line numbers are from the upst
 | STT provider protocol | `leanring-buddy/BuddyTranscriptionProvider.swift` | `BuddyTranscriptionProvider` and `BuddyStreamingTranscriptionSession`. Factory picks by the `VoiceTranscriptionProvider` Info.plist key. |
 | STT upload template | `leanring-buddy/OpenAIAudioTranscriptionProvider.swift` | Already buffers WAV at 16 kHz and posts multipart to an OpenAI-shaped endpoint. Generalize the URL and drop the key requirement to target the Spark. |
 | TTS client | `leanring-buddy/ElevenLabsTTSClient.swift` | 81 lines. The app uses only `speakText`, `stopPlayback`, `isPlaying`. Put a protocol in front and add a Spark backend. |
-| LLM call | `leanring-buddy/CompanionManager.swift:586` `sendTranscriptToClaudeWithScreenshot` | Replace the `claudeAPI.analyzeImageStreaming` call with a sidecar client call. |
-| Pointing parse | `leanring-buddy/CompanionManager.swift:784` `parsePointingCoordinates` | Becomes dead once pointing arrives as `overlay.point_at`. Keep the pixel-to-point scaling below it (lines ~640-680); the tools use the same coordinate convention. |
+| LLM call | `leanring-buddy/CompanionManager.swift` `sendTranscriptToClaudeWithScreenshot` | Cut in chunk 4: sends `user.utterance` through `AgentSidecarClient` and waits for the turn; `handleAgentSidecarMessage` routes everything the turn sends back. |
+| Sidecar lifecycle | `leanring-buddy/SidecarProcessController.swift` | Chunk 4. Attaches to a sidecar on port 47821 if one answers, else spawns one from source with Node + tsx and stops it on quit. |
+| Pointing parse | `leanring-buddy/CompanionManager.swift` `parsePointingCoordinates` | Voice turns no longer use it; `pointCursorAtAgentScreenshotLocation` does the same scaling for `overlay.point_at`. Still used by the onboarding demo, which still calls `ClaudeAPI` through the undeployed Worker. |
 | Voice persona | `leanring-buddy/CompanionManager.swift:544` | Moves to the sidecar as the `append` text on the `claude_code` preset. |
 | Screenshot capture | `leanring-buddy/CompanionScreenCaptureUtility.swift` | Unchanged. Also serves `screenshot.request` from the sidecar. |
-| Interruption | `leanring-buddy/CompanionManager.swift:494` | A new hotkey press cancels the response task and stops playback. Extend to send `user.interrupt`. |
+| Interruption | `leanring-buddy/CompanionManager.swift` `handleShortcutTransition` | A new hotkey press cancels the response task, which sends `user.interrupt` (chunk 4). Measuring it is chunk 7. |
+| Interim voice | `Info.plist` `VoiceTranscriptionProvider = apple` | AssemblyAI needs the Worker this fork never deploys, so Apple Speech listens until Spark STT (chunk 1). |
+| Spark voice | `SparkSpeechSentenceQueue.swift`, `spark-tts-server/` | Answers are spoken by Miso TTS 8B on the Spark when the `SparkSpeechBaseURL` user default is set; otherwise, and for every error message, `SystemSpeechSentenceQueue` (macOS voice). Sentences go to the Spark one at a time, in order. Miso is ~2.8x slower than real time on the Spark today, so each sentence arrives whole after a long pause. |
 | Overlay | `leanring-buddy/OverlayWindow.swift` | Has a triangle that flies to a point. Needs a new circle/highlight gesture. |
 
 ## Privacy

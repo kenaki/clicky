@@ -16,6 +16,13 @@ describe("parseIncomingMessage", () => {
     }
   });
 
+  it("parses a session.start without a project directory so the sidecar's own is used", () => {
+    const message = parseIncomingMessage(envelope("session.start", {}));
+    if (message.type !== "session.start") throw new Error("wrong type");
+    expect(message.payload.projectDirectory).toBeUndefined();
+    expect(message.payload.permissionMode).toBe("default");
+  });
+
   it("parses a session.start and defaults the permission mode", () => {
     const message = parseIncomingMessage(envelope("session.start", { projectDirectory: "/tmp/project" }));
     if (message.type !== "session.start") throw new Error("wrong type");

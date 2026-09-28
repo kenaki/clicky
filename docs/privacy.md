@@ -7,7 +7,7 @@ Keep it that way: when a capture or storage path changes, update this file in th
 
 | Source | What | When | Never |
 |---|---|---|---|
-| Swift app | One still frame per connected display, JPEG, max 1280 px, via `SCScreenshotManager.captureImage`. Held in memory only. | When you release the push-to-talk key. Later, also when the agent calls `take_screenshot`. | Never a video stream. Never written to disk by the app. |
+| Swift app | One still frame per connected display, JPEG, max 1280 px, via `SCScreenshotManager.captureImage`. Held in memory only, sent to the sidecar as base64. | When you release the push-to-talk key, and when the agent calls `take_screenshot`. | Never a video stream. Never written to disk by the app. |
 | Swift app | Microphone audio | Only while the push-to-talk key is held. | Never when the key is up. |
 | Sidecar spikes | One still frame of the main display via `screencapture`. | When you run a spike without `--screenshot`, and when the agent calls `take_screenshot` during a spike. | No microphone at all in the spikes. |
 
@@ -20,7 +20,12 @@ another look before it calls the tool, and the app must show the visible indicat
 1. To Anthropic, inside the request the Claude Code binary makes. This is the same as upstream
    Clicky, which sent screenshots to the same API through its Cloudflare Worker. Their handling
    is governed by Anthropic's terms for your account; this document does not restate them.
-2. Nowhere else over the network. The Spark, when it exists, receives audio only.
+2. Nowhere else over the network. The Spark never receives screenshots.
+
+The Spark voice server (`spark-tts-server/`) receives the **text of each spoken sentence** of Claude's
+answers over plain HTTP on the home network, and returns audio. It keeps nothing on disk; its log
+(`~/clicky-voice/server.log` on the Spark) records the first 60 characters of each sentence with its
+timing. Nothing leaves the LAN.
 
 ## Where a screenshot lands on disk
 
@@ -55,14 +60,18 @@ you add `-- --include-sessions`, because deleting them removes those sessions fr
 
 ## Making every capture visible
 
-Requirements for the Swift app, tracked in chunk 4 of `.claude/plans/active/agent-sidecar/plan.md`:
+Built in chunk 4. Every capture the agent receives goes through one function,
+`captureScreensVisiblyForAgent` in `CompanionManager.swift`, which:
 
-- A visible indicator at the instant of every capture: a brief border flash on the captured
-  display and a badge on the cursor bubble that stays up while a screenshot is in flight.
-- The menu bar panel shows the time of the last capture and how many captures the current
-  session has made.
-- Agent-initiated captures are announced by voice before they happen and use the same indicator.
-- No setting can make a capture silent and invisible at the same time.
+- flashes a blue border on every display at the instant of capture (every display is captured);
+- shows a camera badge beside the cursor while the capture is in flight, held for at least 0.8 s;
+- counts the capture and records its time, which the menu bar panel shows as
+  "Screen captures: N · last 4:21 PM" for the current agent session;
+- brings the overlay on screen first if it was hidden, so the indicator cannot be skipped.
+
+The app's own overlay windows are excluded from the capture, so the flash never appears in a
+screenshot. Agent-initiated captures are also announced by voice before they happen (the
+persona says so first). No setting can make a capture silent and invisible at the same time.
 
 In the spikes today: the capture is announced on stdout and the macOS shutter sound is not
 suppressed.

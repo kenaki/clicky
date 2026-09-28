@@ -30,6 +30,9 @@ import {
 } from "./tools/screenAnnotationTools.js";
 import { VOICE_PERSONA_PROMPT } from "./voicePersonaPrompt.js";
 
+/** Shorter sentences ("sure.") are joined to the next one before being spoken; see SentenceStreamSplitter. */
+const MINIMUM_WORDS_PER_SPOKEN_SENTENCE = 4;
+
 export interface SessionReadyInfo {
   sessionId: string;
   projectDirectory: string;
@@ -187,7 +190,7 @@ export class AgentSession {
       startedAtMs: Date.now(),
       finished: createDeferred<void>(),
       interruptRequested: false,
-      sentenceSplitter: new SentenceStreamSplitter(),
+      sentenceSplitter: new SentenceStreamSplitter(MINIMUM_WORDS_PER_SPOKEN_SENTENCE),
       sentenceCount: 0
     };
 
@@ -330,7 +333,7 @@ export class AgentSession {
         } else if (event.type === "content_block_stop") {
           // A text block ending (usually because a tool call follows) is a sentence
           // boundary even without trailing punctuation or whitespace.
-          const trailingSentence = turn.sentenceSplitter.flush();
+          const trailingSentence = turn.sentenceSplitter.flushAtPause();
           if (trailingSentence !== null) {
             this.emitSentence(turn, trailingSentence);
           }

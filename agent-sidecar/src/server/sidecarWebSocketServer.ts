@@ -23,6 +23,8 @@ export interface SidecarWebSocketServerOptions {
   port: number;
   sharedToken: string | null;
   sidecarVersion: string;
+  /** Used when `session.start` omits `projectDirectory`. */
+  defaultProjectDirectory: string;
   model: string;
   effort: EffortLevel;
   persistSessions: boolean;
@@ -114,7 +116,7 @@ class ClientConnection {
           permissionTimeoutMs: this.serverOptions.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
         });
         this.session = new AgentSession({
-          projectDirectory: message.payload.projectDirectory,
+          projectDirectory: message.payload.projectDirectory ?? this.serverOptions.defaultProjectDirectory,
           permissionMode: message.payload.permissionMode,
           resumeSessionId: message.payload.resumeSessionId,
           model: this.serverOptions.model,

@@ -19,7 +19,8 @@ import { captureMainDisplay } from "./macScreenCapture.js";
 
 interface ClientSpikeArguments {
   port: number;
-  projectDirectory: string;
+  /** Null lets the sidecar use the directory it was started with. */
+  projectDirectory: string | null;
   question: string;
   helloOnly: boolean;
   token: string | null;
@@ -43,7 +44,7 @@ function parseClientSpikeArguments(argv: string[]): ClientSpikeArguments {
   const permissionMode = ((values["permission-mode"] as string | undefined) ?? "default") as VoicePermissionMode;
   return {
     port: values.port ? Number.parseInt(values.port as string, 10) : Number.parseInt(process.env.CLICKY_SIDECAR_PORT ?? String(DEFAULT_SIDECAR_PORT), 10),
-    projectDirectory: (values.project as string | undefined) ?? process.env.CLICKY_PROJECT_DIRECTORY ?? process.cwd(),
+    projectDirectory: (values.project as string | undefined) ?? null,
     question: (values.question as string | undefined) ?? "what am i looking at, and where is the most important button on this screen?",
     helloOnly: Boolean(values["hello-only"]),
     token: (values.token as string | undefined) ?? process.env.CLICKY_SIDECAR_TOKEN ?? null,
@@ -101,7 +102,10 @@ async function main(): Promise<void> {
             finish(0);
             return;
           }
-          sendToSidecar("session.start", { projectDirectory: spikeArguments.projectDirectory, permissionMode: spikeArguments.permissionMode });
+          sendToSidecar("session.start", {
+            ...(spikeArguments.projectDirectory !== null ? { projectDirectory: spikeArguments.projectDirectory } : {}),
+            permissionMode: spikeArguments.permissionMode
+          });
           process.stdout.write("capturing screenshot...\n");
           const screenshot: Screenshot = await captureMainDisplay();
           utteranceSentAtMs = Date.now();

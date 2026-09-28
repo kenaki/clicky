@@ -44,7 +44,8 @@ export const clientHelloPayloadSchema = z.object({
 });
 
 export const sessionStartPayloadSchema = z.object({
-  projectDirectory: z.string().min(1),
+  /** Omit to use the directory the sidecar was started with (`--project` or `CLICKY_PROJECT_DIRECTORY`). */
+  projectDirectory: z.string().min(1).optional(),
   resumeSessionId: z.string().min(1).optional(),
   permissionMode: permissionModeSchema.default("default")
 });

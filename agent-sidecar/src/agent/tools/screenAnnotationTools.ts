@@ -27,11 +27,14 @@ export interface ScreenAnnotationToolHost {
   requestScreenshots(): Promise<Screenshot[]>;
 }
 
+// Optional plus a default in the handler, not `.default(1)`: zod emits a defaulted field as
+// required in the tool's JSON schema, and the SDK's validator rejected calls that omitted it.
+const DEFAULT_SCREEN_INDEX = 1;
 const screenIndexSchema = z
   .number()
   .int()
   .min(1)
-  .default(1)
+  .optional()
   .describe("1-based index of the screen, from the image label. Defaults to 1, the cursor screen.");
 
 const labelSchema = z
@@ -58,10 +61,11 @@ export function createScreenAnnotationToolServer(
       screenIndex: screenIndexSchema
     },
     async (args) => {
-      const bounds = host.resolveScreenshotBounds(args.screenIndex);
+      const screenIndex = args.screenIndex ?? DEFAULT_SCREEN_INDEX;
+      const bounds = host.resolveScreenshotBounds(screenIndex);
       const point = bounds ? clampPointToBounds({ x: args.x, y: args.y }, bounds) : { x: args.x, y: args.y };
-      logger.info("point_at", { ...point, label: args.label, screenIndex: args.screenIndex, clamped: Boolean(bounds) });
-      host.handleOverlayCommand({ kind: "point_at", ...point, label: args.label, screenIndex: args.screenIndex });
+      logger.info("point_at", { ...point, label: args.label, screenIndex, clamped: Boolean(bounds) });
+      host.handleOverlayCommand({ kind: "point_at", ...point, label: args.label, screenIndex });
       return { content: [{ type: "text", text: `pointing at ${args.label}` }] };
     }
   );
@@ -78,11 +82,12 @@ export function createScreenAnnotationToolServer(
       screenIndex: screenIndexSchema
     },
     async (args) => {
-      const bounds = host.resolveScreenshotBounds(args.screenIndex);
+      const screenIndex = args.screenIndex ?? DEFAULT_SCREEN_INDEX;
+      const bounds = host.resolveScreenshotBounds(screenIndex);
       const rawRegion = { x: args.x, y: args.y, width: args.width, height: args.height };
       const region = bounds ? clampRegionToBounds(rawRegion, bounds) : rawRegion;
-      logger.info("circle_region", { ...region, label: args.label, screenIndex: args.screenIndex, clamped: Boolean(bounds) });
-      host.handleOverlayCommand({ kind: "circle_region", ...region, label: args.label, screenIndex: args.screenIndex });
+      logger.info("circle_region", { ...region, label: args.label, screenIndex, clamped: Boolean(bounds) });
+      host.handleOverlayCommand({ kind: "circle_region", ...region, label: args.label, screenIndex });
       return { content: [{ type: "text", text: `circling ${args.label}` }] };
     }
   );
@@ -95,6 +100,10 @@ export function createScreenAnnotationToolServer(
       try {
         const screenshots = await host.requestScreenshots();
         logger.info("take_screenshot", { screenshotCount: screenshots.length });
+        if (screenshots.length === 0) {
+          // The app answers with an empty list when its capture failed, so the tool fails fast instead of timing out.
+          return { content: [{ type: "text", text: "could not capture the screen: the app returned no screenshots" }], isError: true };
+        }
         return {
           content: screenshots.flatMap((screenshot) => [
             { type: "text" as const, text: describeScreenshotForModel(screenshot) },

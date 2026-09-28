@@ -10,9 +10,21 @@
 ---
 
 ## SESSION HANDOFF — resume here
-**State at handoff (2026-09-27):** chunk 0 ☑ (three runs), chunk 3 ◐ (transport verified, agent
-round trip pending), chunks 1–2 ⏸ blocked on Q-spark-host, chunks 4–9 ☐. Sidecar typechecks, 43 unit
-tests pass. Branch `feature/agent-sidecar-prototype` on `origin` (kenaki/clicky).
+**State at handoff (2026-09-28):** chunks 0, 2, 3, 4 ☑; chunk 7 ◐; 1, 5, 6, 8, 9 ☐. Sidecar typechecks,
+50 unit tests pass; Swift typechecks against stub PostHog/Sparkle modules (no `xcodebuild`).
+Branch `feature/agent-sidecar-prototype`. Chunk 4, the Spark voice, spark-tts-server/ and docs are
+committed (Ken's pbxproj signing-team change is deliberately left unstaged; the project uses
+file-system synchronized groups, so new Swift files need no pbxproj edit).
+**Where the voice is:** answers are spoken by Miso TTS 8B on the Spark (Ken chose it over Kokoro despite
+RTF 2.8; see `.claude/plans/backlog/spark-tts-server/tech-scout.md`). Server: `spark-tts-server/`,
+running on the Spark from `~/clicky-voice` via `run_on_spark.sh` (manual start, not on boot). App:
+`SparkSpeechSentenceQueue.swift`, enabled by the `SparkSpeechBaseURL` user default (already set on Ken's Mac).
+**Ken's run (2026-09-28) confirmed** in-order playback. Lag is Miso itself: ~15–20 s to first speech,
+~14 s gaps, server busy back to back. **In progress: transcript panel** — pinned top right, transparent,
+same look as the existing UI, full answer streams in while the voice reads along (current sentence
+highlighted). Voice reads everything for now; "speak a short version only" is Ken's open choice.
+**Next, in Ken's order:** transcript panel → persona/voice polish if needed → later, Miso speed
+(CUDA graph for the 31-pass decoder, int8/int4, streaming) → then chunks 5, 6, 8, 9 and Spark STT (1).
 **To resume:** 1) read this whole file; 2) read `brief.md` and `docs/conventions.md`; 3) do the next ☐
 chunk in dependency order — **one chunk per session**; 4) at the end: verify → commit → update Status +
 Changelog → announce "✅ Chunk X complete — safe to clear context" → stop.
@@ -55,13 +67,13 @@ the user the plan is complete and archived.
 | Chunk | Title | Status | Owner / session | Notes |
 |------:|-------|--------|-----------------|-------|
 | 0 | Tracer bullet: screenshot + question through the Agent SDK, tools, session id | ☑ done | 2026-09-27 | 3 runs; 3.2 s to first speech |
-| 1 | Spark STT probe | ⏸ blocked | | Q-spark-host |
-| 2 | Spark TTS probe | ⏸ blocked | | Q-spark-host |
-| 3 | IPC round trip through the WebSocket server | ◐ in progress | 2026-09-27 | transport ☑; agent turn via `spike:ipc-client` pending |
-| 4 | Swift sidecar client, spawn/kill, capture indicator | ☐ todo | | needs 3 |
+| 1 | Spark STT probe | ☐ todo | | Spark reachable; same server pattern as TTS |
+| 2 | Spark TTS probe | ☑ done | 2026-09-27 | Miso on Spark, RTF 2.8; see spark-tts-server tech-scout |
+| 3 | IPC round trip through the WebSocket server | ☑ done | 2026-09-27 | screenshot + deny paths live; watchdog exits in 2 s |
+| 4 | Swift sidecar client, spawn/kill, capture indicator | ☑ done | 2026-09-27 | Ken's Xcode run passed; interim Apple Speech + macOS voice |
 | 5 | Circle gesture in the overlay | ☐ todo | | needs 4 |
 | 6 | Spoken permissions | ☐ todo | | needs 2, 4 |
-| 7 | App-side sentence playback + barge-in | ☐ todo | | sidecar half ☑; needs 4 |
+| 7 | App-side sentence playback + barge-in | ◐ in progress | 2026-09-28 | order verified; gap check fails on Miso speed |
 | 8 | Latency budget, measured table | ☐ todo | | needs 1, 2, 4 |
 | 9 | Pointing accuracy vs upstream's tag | ☐ todo | | needs 0 only |
 Legend: ☐ todo · ◐ in progress · ☑ done · ⏸ blocked · ⊘ deferred. Notes ≤10 words — a pointer, not a summary.
@@ -71,6 +83,11 @@ Legend: ☐ todo · ◐ in progress · ☑ done · ⏸ blocked · ⊘ deferred. 
 - 2026-09-27 — Chunk 0 ☑: three runs, point_at (1111, 9) each time, low effort, sentence streaming; 3.2 s to first speech. Commits ca72cc4…177714c.
 - 2026-09-27 — Chunk 3 ◐: hello, second-client refusal, malformed frame, session-not-started verified live; agent round trip pending.
 - 2026-09-27 — Privacy: temp-capture leak fixed, `privacy:list`/`clean`, `CLICKY_PERSIST_SESSIONS`, capture indicator added to chunk 4. Commit 97ac5ef.
+- 2026-09-27 — Chunk 3 ☑: take_screenshot reply, point_at, spoken deny all live; parent watchdog exits in ~2 s. Turns cost $0.24–0.37.
+- 2026-09-27 — Chunk 4 ☑: voice turn end to end in Xcode, cursor flew, border flashed, no orphan sidecar. Fixed `screenIndex` rejected when omitted.
+- 2026-09-27 — Chunk 2 ☑ (reshaped by tech-scout): Miso TTS 8B served on the Spark, 221 ms/80 ms frame. Chunk 7 ◐: SparkSpeechSentenceQueue, in-order playback, cancel frees GPU.
+- 2026-09-28 — Chunk 7 ◐: Spark requests serialized (out-of-order generation stalled playback); short-sentence merge; conversational persona. 50 tests.
+- 2026-09-28 — Chunk 7 ◐: Ken's run plays every sentence in order; gaps ~14 s are Miso RTF 2.8 (server never idle), not the app.
 - 2026-09-27 — Ken's workflow integrated: this plan and `brief.md`; `.claude/plans` un-ignored; AGENTS.md follows the project template.
 
 ### Produced values (runtime handoffs)
@@ -101,7 +118,13 @@ See `brief.md`. Build-now: chunks 0–9. Deferred: wake word, computer use, loca
 | P-annotation-allow | Annotation tools force-allowed in the permission relay | S2 (harmless tools, our overlay) | auto-decided | `permissionRelay.ts` |
 | P-gitignore | Un-ignore `.claude/plans/` and `launch.json` | S2 (repo hygiene) | auto-decided | `.gitignore` |
 | P-swift-transport | `URLSessionWebSocketTask` for the Swift client | S2 (stdlib, replaceable) | auto-decided | no third-party dep |
-| P-sidecar-spawn | App spawns `node` with the sidecar; requires Node on the Mac for now | S3 (packaging commitment) | ⏸ awaiting-you | dev: system Node; ship: bundle later |
+| P-sidecar-spawn | App spawns `node` with the sidecar; requires Node on the Mac for now | S3 (packaging commitment) | ☑ Ken 2026-09-27 | system Node, from source via tsx; bundle later |
+| P-sidecar-attach | App attaches to a sidecar already on 47821 before spawning | S2 (dev ergonomics) | ☑ Ken 2026-09-27 | attached sidecar is never stopped by the app |
+| P-spawn-from-source | Spawn `src/cli/serve.ts` via `node --import tsx`, not `dist/` | S2 (build output resolves `.env` from `dist/`) | auto-decided | no build step; 0.16 s to listening |
+| P-spawn-token | Random per-launch `CLICKY_SIDECAR_TOKEN` for a spawned sidecar | S2 (local hardening) | auto-decided | env wins over `.env` |
+| P-project-source | `session.start.projectDirectory` optional; sidecar's own wins | S2 (non-breaking wire change) | auto-decided | fixes Q-project-dir-source |
+| P-interim-voice | Apple Speech in, macOS voice out until the Spark | S2 (reversible, Worker never deployed) | auto-decided | replaced in chunks 1, 2, 7 |
+| P-permission-stopgap | Deny every `permission.request` at once until chunk 6 | S2 (safe default) | auto-decided | edits never happen by voice yet |
 
 ## Conventions / translation notes
 - Coordinates: screenshot pixel space, origin top-left; app scales to display points and flips to AppKit bottom-left. Unchanged from upstream.
@@ -178,17 +201,19 @@ See `brief.md`. Build-now: chunks 0–9. Deferred: wake word, computer use, loca
 - **Bundling Node with the app** ⊘ P-sidecar-spawn; dev uses system Node.
 
 ## Verification (end-to-end)
-- Sidecar: `cd agent-sidecar && npm run typecheck && npm test` (43 tests). Known noise: `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning at startup is expected.
+- Sidecar: `cd agent-sidecar && npm run typecheck && npm test` (44 tests). Known noise: `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning at startup is expected.
 - Swift: build and run from Xcode only. Known noise: Swift 6 concurrency warnings, deprecated `onChange` in `OverlayWindow.swift`. Do not fix.
 - Auth: `npm run check-auth` must report credential source `none` (the login).
 - Privacy: `npm run privacy:list` after any capture-related change.
 
 ## Open Questions (surface to human; don't guess)
-- **Q-spark-host** — hostname and services on the Spark. Blocks 1, 2.
+- ~~Q-spark-host~~ — resolved: reachable over SSH (see memory `spark-ssh-access`); never committed.
 - **Q-project-dir** — default project directory for voice; panel switch? Default `CLICKY_PROJECT_DIRECTORY`.
 - **Q-persist** — transcripts on disk by default? Default true (G-persist ⏸).
-- **Q-mcp-noise** — restrict voice sessions to project setting sources? Default: leave, measure in chunk 8.
-- **Q-node-packaging** — P-sidecar-spawn ⏸.
+- **Q-mcp-noise** — restrict voice sessions to project setting sources? Default: leave, measure in chunk 8. Chunk 3 turns cost $0.24–0.37 each; check what the prompt carries.
+- ~~Q-project-dir-source~~ — resolved in chunk 4 (P-project-source). The app omits it; set `CLICKY_PROJECT_DIRECTORY` in `agent-sidecar/.env`, else sessions run in `agent-sidecar/`.
+- **Q-onboarding-demo** — the onboarding demo still calls `ClaudeAPI` through the undeployed Worker and fails silently. Port to the sidecar or remove?
+- **Q-node-packaging** — dev decided (P-sidecar-spawn); shipping bundle deferred.
 
 ## Reference index
 - Files touched so far: `agent-sidecar/**`, `docs/**`, `AGENTS.md`, `.gitignore`, `.claude/**`.

@@ -50,4 +50,44 @@ describe("SentenceStreamSplitter", () => {
     expect(splitter.flush()).toBeNull();
     expect(splitter.pending).toBe("");
   });
+
+  describe("with a minimum sentence length", () => {
+    it("joins a too-short sentence to the next one", () => {
+      const splitter = new SentenceStreamSplitter(4);
+      expect(splitter.feed("sure. ")).toEqual([]);
+      expect(splitter.feed("the average loss is over your examples. ")).toEqual([
+        "sure. the average loss is over your examples."
+      ]);
+    });
+
+    it("keeps joining short sentences until the result is long enough", () => {
+      const splitter = new SentenceStreamSplitter(4);
+      expect(splitter.feed("okay. yes. got it now. ")).toEqual(["okay. yes. got it now."]);
+    });
+
+    it("still returns a held short sentence at the end of the turn", () => {
+      const splitter = new SentenceStreamSplitter(4);
+      splitter.feed("sure. ");
+      expect(splitter.flush()).toBe("sure.");
+      expect(splitter.flush()).toBeNull();
+    });
+
+    it("holds a short remainder across a pause and speaks it with the next sentence", () => {
+      const splitter = new SentenceStreamSplitter(4);
+      splitter.feed("sure.");
+      expect(splitter.flushAtPause()).toBeNull();
+      expect(splitter.feed(" the menu is right up at the top. ")).toEqual(["sure. the menu is right up at the top."]);
+    });
+
+    it("speaks a long enough remainder at a pause", () => {
+      const splitter = new SentenceStreamSplitter(4);
+      splitter.feed("let me take another look at your screen");
+      expect(splitter.flushAtPause()).toBe("let me take another look at your screen");
+    });
+
+    it("leaves the default splitter unchanged", () => {
+      const { sentences } = feedAll(["click it! then go. "]);
+      expect(sentences).toEqual(["click it!", "then go."]);
+    });
+  });
 });

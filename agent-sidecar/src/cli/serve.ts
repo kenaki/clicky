@@ -38,6 +38,7 @@ async function main(): Promise<void> {
     port: config.port,
     sharedToken: config.sharedToken,
     sidecarVersion: readSidecarVersion(),
+    defaultProjectDirectory: config.projectDirectory,
     model: config.model,
     effort: config.effort,
     persistSessions: config.persistSessions,

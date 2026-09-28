@@ -138,9 +138,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1283 | Central state machine. In this fork, voice turns go to the agent sidecar (`sendTranscriptToClaudeWithScreenshot` → `handleAgentSidecarMessage`); every agent capture goes through `captureScreensVisiblyForAgent`. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~826 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
@@ -151,6 +151,11 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
+| `AgentSidecarMessages.swift` | ~205 | Codable form of `docs/ipc-protocol.md`: outgoing envelope and payloads, incoming messages decoded by type. |
+| `AgentSidecarClient.swift` | ~197 | `URLSessionWebSocketTask` client for the sidecar: hello handshake with a deadline, typed senders, receive loop on the main actor. |
+| `SidecarProcessController.swift` | ~223 | Attach to a sidecar already on port 47821, or spawn one from source (`node --import tsx … serve.ts --parent-pid`) with a per-launch token; stops only what it spawned. |
+| `SystemSpeechSentenceQueue.swift` | ~34 | macOS voice: speaks answers when no Spark voice server is configured, and always speaks error fallbacks. |
+| `SparkSpeechSentenceQueue.swift` | ~230 | Spark voice: POSTs each sentence to `SparkSpeechBaseURL` + `/v1/audio/speech` as 24 kHz PCM, plays in enqueue order on one `AVAudioEngine` player node, stop cancels requests and drops queued audio. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
@@ -277,3 +282,4 @@ Do NOT update this file for minor edits, bug fixes, or changes that don't affect
 | `agent-sidecar/src/logging/logger.ts` | Structured stderr logger. |
 | `agent-sidecar/src/util/asyncPushQueue.ts` | Async iterable queue feeding the SDK's streaming input. |
 | `agent-sidecar/test/*.test.ts` | vitest unit tests for the pure layers. |
+| `spark-tts-server/miso_speech_server.py` | FastAPI server on the DGX Spark: Miso TTS 8B behind OpenAI-compatible `/v1/audio/speech`, voice from a reference clip, one generation at a time, cancels on client disconnect. `README.md` beside it has the Spark layout and install notes. |

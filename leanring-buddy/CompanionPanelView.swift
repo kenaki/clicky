@@ -31,6 +31,15 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                agentSidecarStatusRow
+                    .padding(.horizontal, 16)
+
+                screenCaptureStatusRow
+                    .padding(.horizontal, 16)
+
+                speechVoiceStatusRow
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -639,6 +648,88 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    // MARK: - Agent Sidecar Rows
+
+    /// Whether voice turns can reach the agent sidecar, and how it was found.
+    private var agentSidecarStatusRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Agent")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Text(companionManager.agentSidecarStatusText)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// How many screenshots the agent session has received and when the last
+    /// one was taken, so no capture goes unnoticed (docs/privacy.md).
+    private var screenCaptureStatusRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "camera")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Screen captures")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Text(screenCaptureSummaryText)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Which voice speaks answers: Miso on the Spark, or the macOS fallback.
+    private var speechVoiceStatusRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.wave.2")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Voice")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Text(companionManager.speechVoiceStatusText)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textTertiary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var screenCaptureSummaryText: String {
+        guard let lastScreenCaptureDate = companionManager.lastScreenCaptureDate else {
+            return "none this session"
+        }
+        let lastCaptureTimeText = lastScreenCaptureDate.formatted(date: .omitted, time: .shortened)
+        return "\(companionManager.screenCaptureCountThisSession) · last \(lastCaptureTimeText)"
     }
 
     // MARK: - DM Farza Button

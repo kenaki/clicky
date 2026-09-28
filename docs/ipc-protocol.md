@@ -7,9 +7,13 @@ document. When they disagree, the schemas are right and this doc has a bug.
 
 ## Transport
 
-- The app spawns the sidecar with `--port <n>` (default 47821) and, optionally, the environment
-  variable `CLICKY_SIDECAR_TOKEN`. The sidecar prints `listening on ws://127.0.0.1:<n>` to stdout
-  once ready; the app waits for that line before connecting.
+- The app first tries to attach: if a sidecar already answers `client.hello` on port 47821 (you
+  started one with `npm run serve`), it uses that one and never stops it.
+- Otherwise the app spawns one from source, the same way `npm run serve` does:
+  `node --import <agent-sidecar>/node_modules/tsx/dist/loader.mjs <agent-sidecar>/src/cli/serve.ts
+  --port 47821 --parent-pid <app pid>`, with a random per-launch `CLICKY_SIDECAR_TOKEN` in its
+  environment (environment values win over `.env`). The sidecar prints
+  `listening on ws://127.0.0.1:<n>` to stdout once ready; the app waits for that line before connecting.
 - The first message from the app must be `client.hello`. Anything else before it is answered
   with `error` code `hello_required` and the socket is closed.
 - The sidecar exits when the socket closes and its parent process id no longer exists.
@@ -55,7 +59,7 @@ conversion to display points and AppKit coordinates.
 | type | payload | Notes |
 |---|---|---|
 | `client.hello` | `{ clientName, token? }` | Must be first. |
-| `session.start` | `{ projectDirectory, resumeSessionId?, permissionMode }` | `permissionMode` is one of `default`, `plan`, `acceptEdits`. Starts or resumes the agent session. |
+| `session.start` | `{ projectDirectory?, resumeSessionId?, permissionMode }` | `permissionMode` is one of `default`, `plan`, `acceptEdits`. Starts or resumes the agent session. Omit `projectDirectory` to use the sidecar's own (`--project`, else `CLICKY_PROJECT_DIRECTORY`, else its working directory); the app always omits it. |
 | `user.utterance` | `{ utteranceId, transcript, screenshots: Screenshot[] }` | One voice turn. `screenshots` may be empty for a follow-up that does not need the screen. |
 | `user.interrupt` | `{ utteranceId? }` | Stop the current turn. The sidecar calls the SDK's interrupt. |
 | `permission.decision` | `{ permissionRequestId, decision, denialReason? }` | `decision` is `allow` or `deny`. |
@@ -74,7 +78,7 @@ conversion to display points and AppKit coordinates.
 | `overlay.point_at` | `{ x, y, label, screenIndex }` | Fly the cursor to this point. |
 | `overlay.circle_region` | `{ x, y, width, height, label, screenIndex }` | Draw a circle or rounded highlight around this rectangle. |
 | `overlay.clear` | `{}` | Remove annotations. |
-| `screenshot.request` | `{ screenshotRequestId }` | Claude called `take_screenshot`. The app must answer with `screenshot.captured` within 5 s or the tool returns an error to Claude. |
+| `screenshot.request` | `{ screenshotRequestId }` | Claude called `take_screenshot`. The app must answer with `screenshot.captured` within 5 s or the tool returns an error to Claude. An empty `screenshots` list means the capture failed and fails the tool at once. |
 | `permission.request` | `{ permissionRequestId, toolName, input, spokenSummary }` | `spokenSummary` is a one-sentence, ear-friendly description the app can read aloud, for example "want me to edit CompanionManager.swift?". The app must answer within 30 s or the sidecar denies. |
 | `error` | `{ code, message, utteranceId? }` | Never fatal to the session unless `code` starts with `session_`. |
 

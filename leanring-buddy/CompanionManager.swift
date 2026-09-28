@@ -80,6 +80,54 @@ final class CompanionManager: ObservableObject {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
+    // MARK: - Agent Sidecar State
+
+    /// Voice turns go to the agent sidecar (agent-sidecar/, the Claude Agent SDK
+    /// in a Node process) instead of ClaudeAPI. See docs/ipc-protocol.md.
+    private let agentSidecarClient = AgentSidecarClient()
+    private let sidecarProcessController = SidecarProcessController()
+    /// Built-in macOS voice: speaks answers when no Spark voice server is configured,
+    /// and always speaks error fallbacks, which must work even when the Spark is down.
+    private let systemSpeechSentenceQueue = SystemSpeechSentenceQueue()
+    /// Miso on the Spark (spark-tts-server/), when `SparkSpeechBaseURL` is set.
+    private lazy var sparkSpeechSentenceQueue: SparkSpeechSentenceQueue? = {
+        let sparkSpeechSentenceQueue = SparkSpeechSentenceQueue.makeIfConfigured()
+        sparkSpeechSentenceQueue?.sentenceFailureHandler = { [weak self] failedSentenceText in
+            // Say the words in the backup voice rather than drop them.
+            self?.systemSpeechSentenceQueue.enqueueSentence(failedSentenceText)
+        }
+        return sparkSpeechSentenceQueue
+    }()
+    /// The in-flight attach-or-spawn, shared so two quick utterances never start two sidecars.
+    private var sidecarConnectionTask: Task<Void, Error>?
+    /// The utterance whose turn is running; sentences from any other turn are stale.
+    private var currentAgentUtteranceId: String?
+    /// Resumed when the sidecar finishes, fails, or abandons the turn for that utterance.
+    private var agentTurnCompletionContinuations: [String: CheckedContinuation<Void, Never>] = [:]
+    /// The most recent captures, in screen-index order (index 0 is screen 1, the
+    /// cursor screen). Overlay coordinates from the sidecar refer to these.
+    private var latestScreenCaptures: [CompanionScreenCapture] = []
+    private var screenCaptureBadgeHideTask: Task<Void, Never>?
+
+    /// Which voice speaks answers, for the panel.
+    var speechVoiceStatusText: String {
+        if let sparkSpeechSentenceQueue {
+            return "Miso on Spark (\(sparkSpeechSentenceQueue.voiceName))"
+        }
+        return "macOS voice"
+    }
+
+    /// One-line sidecar state for the panel, e.g. "attached on port 47821".
+    @Published private(set) var agentSidecarStatusText: String = "not connected"
+    /// Captures sent to the agent since its session started. Shown in the panel.
+    @Published private(set) var screenCaptureCountThisSession: Int = 0
+    @Published private(set) var lastScreenCaptureDate: Date?
+    /// Bumped at the instant of every capture; every overlay flashes its border on change.
+    @Published private(set) var screenCaptureFlashCount: Int = 0
+    /// True while a capture is in flight (held for at least a moment so it can be seen);
+    /// the cursor shows a camera badge.
+    @Published private(set) var isScreenCaptureInFlight: Bool = false
+
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
@@ -182,6 +230,16 @@ final class CompanionManager: ObservableObject {
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+
+        // Attach to or start the agent sidecar now so the first voice turn
+        // doesn't pay for Node startup and the session handshake.
+        Task {
+            do {
+                try await ensureAgentSidecarSession()
+            } catch {
+                print("⚠️ Agent sidecar not ready at launch: \(error.localizedDescription)")
+            }
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -295,6 +353,10 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        stopAllSpeechImmediately()
+        agentSidecarClient.disconnect()
+        // Only a sidecar this app spawned is stopped; an attached one is yours.
+        sidecarProcessController.stopSpawnedSidecar()
         shortcutTransitionCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
@@ -491,10 +553,16 @@ final class CompanionManager: ObservableObject {
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
-            // Cancel any in-progress response and TTS from a previous utterance
+            // Cancel any in-progress response and TTS from a previous utterance.
+            // Cancelling the response task sends user.interrupt to the sidecar.
             currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            stopAllSpeechImmediately()
             clearDetectedElementLocation()
+            // A sidecar turn holds .responding while it speaks; release it so
+            // the listening waveform can take over.
+            if voiceState == .responding {
+                voiceState = .idle
+            }
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -578,144 +646,50 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - AI Response Pipeline
 
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
+    /// Captures every screen, sends the transcript and screenshots to the agent
+    /// sidecar, and waits until the sidecar finishes the turn. Everything the
+    /// turn does arrives as sidecar messages while this waits (spoken sentences,
+    /// pointing, fresh screenshots); see handleAgentSidecarMessage. Cancelling
+    /// this task, which a new push-to-talk press does, interrupts the turn.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        stopAllSpeechImmediately()
 
         currentResponseTask = Task {
-            // Stay in processing (spinner) state — no streaming text displayed
+            // Spinner until the first sentence or pointing arrives
             voiceState = .processing
+            let utteranceId = UUID().uuidString
 
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
+                try await ensureAgentSidecarSession()
                 guard !Task.isCancelled else { return }
 
-                // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
-                }
-
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
-                )
-
+                let screenshots = try await captureScreensVisiblyForAgent()
                 guard !Task.isCancelled else { return }
 
-                // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-                let spokenText = parseResult.spokenText
-
-                // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
-                if hasPointCoordinate {
-                    voiceState = .idle
-                }
-
-                // Pick the screen capture matching Claude's screen number,
-                // falling back to the cursor screen if not specified.
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
-                    }
-                    return screenCaptures.first(where: { $0.isCursorScreen })
-                }()
-
-                if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
+                currentAgentUtteranceId = utteranceId
+                await withTaskCancellationHandler {
+                    await sendUtteranceAndWaitForTurnToFinish(
+                        utteranceId: utteranceId,
+                        transcript: transcript,
+                        screenshots: screenshots
                     )
-
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
-                }
-
-                // Save this exchange to conversation history (with the point tag
-                // stripped so it doesn't confuse future context)
-                conversationHistory.append((
-                    userTranscript: transcript,
-                    assistantResponse: spokenText
-                ))
-
-                // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
-                }
-
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
-
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
-
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                } onCancel: {
+                    Task { @MainActor in
+                        self.interruptAgentTurn(utteranceId: utteranceId)
                     }
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
                 ClickyAnalytics.trackResponseError(error: error.localizedDescription)
-                print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                print("⚠️ Companion response error: \(error.localizedDescription)")
+                agentSidecarStatusText = "error: \(error.localizedDescription)"
+                speakAgentErrorFallback(spokenExplanation: "i couldn't reach my agent sidecar. the details are in the xcode console.")
+            }
+
+            if currentAgentUtteranceId == utteranceId {
+                currentAgentUtteranceId = nil
             }
 
             if !Task.isCancelled {
@@ -723,6 +697,334 @@ final class CompanionManager: ObservableObject {
                 scheduleTransientHideIfNeeded()
             }
         }
+    }
+
+    // MARK: - Agent Sidecar Connection
+
+    /// Makes sure a sidecar is connected and its agent session started.
+    /// Attaches to one you started yourself (`npm run serve` in agent-sidecar/)
+    /// if it is listening, otherwise spawns one. Safe to call before every turn:
+    /// it returns immediately when already connected.
+    private func ensureAgentSidecarSession() async throws {
+        if agentSidecarClient.isConnected { return }
+        if let sidecarConnectionTask {
+            return try await sidecarConnectionTask.value
+        }
+
+        let connectionTask = Task { try await self.connectToAgentSidecarAndStartSession() }
+        sidecarConnectionTask = connectionTask
+        defer { sidecarConnectionTask = nil }
+        try await connectionTask.value
+    }
+
+    private func connectToAgentSidecarAndStartSession() async throws {
+        agentSidecarClient.incomingMessageHandler = { [weak self] message in
+            self?.handleAgentSidecarMessage(message)
+        }
+        agentSidecarClient.disconnectHandler = { [weak self] reason in
+            self?.handleAgentSidecarDisconnected(reason: reason)
+        }
+
+        let sidecarPort = AgentSidecarProtocol.defaultPort
+        agentSidecarStatusText = "connecting…"
+        let connectionMode: SidecarProcessController.ConnectionMode
+
+        do {
+            try await attachToRunningSidecarWaitingOutAStaleOne(port: sidecarPort)
+            connectionMode = .attached
+        } catch let connectionError as AgentSidecarClient.ConnectionError {
+            // Something is listening but refused us (a second client, a token,
+            // or not a sidecar at all). Spawning would only collide on the port.
+            agentSidecarStatusText = "error: \(connectionError.localizedDescription)"
+            throw connectionError
+        } catch {
+            print("🧩 No sidecar listening on port \(sidecarPort), spawning one")
+            agentSidecarStatusText = "starting…"
+            do {
+                let runningSidecar = try await sidecarProcessController.spawnSidecar(port: sidecarPort)
+                _ = try await agentSidecarClient.connect(
+                    port: runningSidecar.port,
+                    sharedToken: runningSidecar.sharedToken,
+                    helloTimeoutSeconds: 5
+                )
+            } catch {
+                agentSidecarStatusText = "error: \(error.localizedDescription)"
+                throw error
+            }
+            connectionMode = .spawned
+        }
+
+        // Voice sessions use `default`: allow-listed tools run, edits ask.
+        try await agentSidecarClient.startSession(permissionMode: "default")
+        screenCaptureCountThisSession = 0
+        lastScreenCaptureDate = nil
+        agentSidecarStatusText = connectionMode == .attached
+            ? "attached on port \(sidecarPort)"
+            : "started on port \(sidecarPort)"
+        print("🧩 Agent sidecar \(agentSidecarStatusText)")
+    }
+
+    /// Attach mode: no token, because a sidecar you started from a terminal
+    /// reads its token (if any) from agent-sidecar/.env.
+    ///
+    /// When Xcode relaunches the app it kills the old one without running its
+    /// quit cleanup, so the old app's sidecar lives on for up to ~2 s (its
+    /// parent-pid watchdog interval) still holding the dead app's connection.
+    /// A launch in that window is refused as a second client; wait it out and
+    /// retry. Once the stale sidecar exits, the port is free and connect fails
+    /// with a plain network error, which sends the caller down the spawn path.
+    private func attachToRunningSidecarWaitingOutAStaleOne(port sidecarPort: Int) async throws {
+        let maximumAttempts = 4
+        for attemptNumber in 1...maximumAttempts {
+            do {
+                _ = try await agentSidecarClient.connect(port: sidecarPort, sharedToken: nil, helloTimeoutSeconds: 2)
+                return
+            } catch AgentSidecarClient.ConnectionError.helloRejected(let reason)
+                        where reason.hasPrefix("client_already_connected") && attemptNumber < maximumAttempts {
+                print("🧩 Sidecar on port \(sidecarPort) already has a client (attempt \(attemptNumber)); waiting for a stale one to exit")
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    private func handleAgentSidecarDisconnected(reason: String) {
+        agentSidecarStatusText = "disconnected"
+        if currentAgentUtteranceId != nil {
+            speakAgentErrorFallback(spokenExplanation: "i lost my connection to the agent sidecar.")
+        }
+        // No turn can finish now; release anything waiting on one. The next
+        // push-to-talk reconnects (or respawns) through ensureAgentSidecarSession.
+        for utteranceId in Array(agentTurnCompletionContinuations.keys) {
+            finishAgentTurn(utteranceId: utteranceId)
+        }
+    }
+
+    // MARK: - Agent Turn
+
+    private func sendUtteranceAndWaitForTurnToFinish(
+        utteranceId: String,
+        transcript: String,
+        screenshots: [AgentSidecarScreenshot]
+    ) async {
+        // Register the waiter before sending so a fast turn_complete can't arrive first.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            agentTurnCompletionContinuations[utteranceId] = continuation
+            Task {
+                do {
+                    try await agentSidecarClient.sendUtterance(
+                        utteranceId: utteranceId,
+                        transcript: transcript,
+                        screenshots: screenshots
+                    )
+                } catch {
+                    print("⚠️ Could not send the utterance to the sidecar: \(error.localizedDescription)")
+                    speakAgentErrorFallback(spokenExplanation: "i couldn't send that to my agent sidecar.")
+                    finishAgentTurn(utteranceId: utteranceId)
+                }
+            }
+        }
+    }
+
+    private func finishAgentTurn(utteranceId: String) {
+        agentTurnCompletionContinuations.removeValue(forKey: utteranceId)?.resume()
+    }
+
+    private func interruptAgentTurn(utteranceId: String) {
+        stopAllSpeechImmediately()
+        finishAgentTurn(utteranceId: utteranceId)
+        Task {
+            try? await agentSidecarClient.sendInterrupt(utteranceId: utteranceId)
+        }
+    }
+
+    private func handleAgentSidecarMessage(_ message: IncomingAgentSidecarMessage) {
+        switch message {
+        case .assistantSentence(let sentencePayload):
+            // Sentences from an interrupted turn can still be in flight; drop them.
+            guard sentencePayload.utteranceId == currentAgentUtteranceId else { return }
+            enqueueAssistantSentenceForSpeech(sentencePayload.text)
+            voiceState = .responding
+
+        case .assistantTurnComplete(let turnCompletePayload):
+            // The sentences were already spoken; spokenText is for the record only.
+            ClickyAnalytics.trackAIResponseReceived(response: turnCompletePayload.spokenText)
+            finishAgentTurn(utteranceId: turnCompletePayload.utteranceId)
+
+        case .overlayPointAt(let pointAtPayload):
+            pointCursorAtAgentScreenshotLocation(
+                screenshotX: pointAtPayload.x,
+                screenshotY: pointAtPayload.y,
+                label: pointAtPayload.label,
+                screenIndex: pointAtPayload.screenIndex
+            )
+
+        case .overlayCircleRegion(let circleRegionPayload):
+            // Chunk 5 draws a real circle. Until then, point at the region's center.
+            pointCursorAtAgentScreenshotLocation(
+                screenshotX: circleRegionPayload.x + circleRegionPayload.width / 2,
+                screenshotY: circleRegionPayload.y + circleRegionPayload.height / 2,
+                label: circleRegionPayload.label,
+                screenIndex: circleRegionPayload.screenIndex
+            )
+
+        case .overlayClear:
+            clearDetectedElementLocation()
+
+        case .screenshotRequest(let screenshotRequestPayload):
+            Task {
+                await answerAgentScreenshotRequest(screenshotRequestId: screenshotRequestPayload.screenshotRequestId)
+            }
+
+        case .permissionRequest(let permissionRequestPayload):
+            // Spoken permissions are chunk 6. Until then every request is
+            // declined at once rather than left to the sidecar's 30 s timeout.
+            print("🧩 Declining \(permissionRequestPayload.toolName): \"\(permissionRequestPayload.spokenSummary)\"")
+            Task {
+                try? await agentSidecarClient.sendPermissionDecision(
+                    permissionRequestId: permissionRequestPayload.permissionRequestId,
+                    decision: "deny",
+                    denialReason: "the voice app cannot ask for permission yet, so it declined automatically"
+                )
+            }
+
+        case .error(let errorPayload):
+            if let utteranceId = errorPayload.utteranceId {
+                if errorPayload.code != "turn_interrupted" && utteranceId == currentAgentUtteranceId {
+                    speakAgentErrorFallback(spokenExplanation: "something went wrong on that one. the details are in the xcode console.")
+                }
+                finishAgentTurn(utteranceId: utteranceId)
+            } else if errorPayload.code.hasPrefix("session_"), let currentAgentUtteranceId {
+                agentSidecarStatusText = "error: \(errorPayload.code)"
+                finishAgentTurn(utteranceId: currentAgentUtteranceId)
+            }
+
+        case .sessionReady, .agentStatus, .sidecarHello, .ignored:
+            // Logged by the client; the spinner is driven by voiceState instead.
+            break
+        }
+    }
+
+    // MARK: - Visible Screen Capture
+
+    /// Every capture the agent receives goes through here so none is silent:
+    /// each overlay flashes a border at the instant of capture, the cursor
+    /// shows a camera badge while it is in flight, and the panel counts it
+    /// (docs/privacy.md, "Making every capture visible").
+    private func captureScreensVisiblyForAgent() async throws -> [AgentSidecarScreenshot] {
+        // The indicator lives in the overlay, so make sure it is on screen.
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        screenCaptureBadgeHideTask?.cancel()
+        isScreenCaptureInFlight = true
+        screenCaptureFlashCount += 1
+
+        let screenCaptures: [CompanionScreenCapture]
+        do {
+            // Our own overlay windows are excluded from the capture, so the flash never appears in it.
+            screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+        } catch {
+            isScreenCaptureInFlight = false
+            throw error
+        }
+
+        latestScreenCaptures = screenCaptures
+        screenCaptureCountThisSession += 1
+        lastScreenCaptureDate = Date()
+
+        // A capture takes a fraction of a second; hold the badge long enough to
+        // be seen without delaying the turn by waiting for it here.
+        screenCaptureBadgeHideTask = Task {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            isScreenCaptureInFlight = false
+        }
+
+        return screenCaptures.enumerated().map { captureIndex, screenCapture in
+            AgentSidecarScreenshot(
+                screenIndex: captureIndex + 1,
+                label: screenCapture.label,
+                isCursorScreen: screenCapture.isCursorScreen,
+                widthPixels: screenCapture.screenshotWidthInPixels,
+                heightPixels: screenCapture.screenshotHeightInPixels,
+                jpegBase64: screenCapture.imageData.base64EncodedString()
+            )
+        }
+    }
+
+    /// Claude called take_screenshot. The persona announces it by voice first.
+    private func answerAgentScreenshotRequest(screenshotRequestId: String) async {
+        let screenshots: [AgentSidecarScreenshot]
+        do {
+            screenshots = try await captureScreensVisiblyForAgent()
+        } catch {
+            // An empty reply makes the tool fail fast instead of waiting out its 5 s timeout.
+            print("⚠️ Agent screenshot request failed: \(error.localizedDescription)")
+            screenshots = []
+        }
+        do {
+            try await agentSidecarClient.sendScreenshotCaptured(screenshotRequestId: screenshotRequestId, screenshots: screenshots)
+        } catch {
+            print("⚠️ Could not send screenshots to the sidecar: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Agent Pointing
+
+    /// Flies the cursor to a point the agent gave in screenshot pixel space.
+    private func pointCursorAtAgentScreenshotLocation(screenshotX: Double, screenshotY: Double, label: String, screenIndex: Int) {
+        // screenIndex is 1-based and matches the order the screenshots were sent in.
+        let targetScreenCapture: CompanionScreenCapture? = {
+            if screenIndex >= 1 && screenIndex <= latestScreenCaptures.count {
+                return latestScreenCaptures[screenIndex - 1]
+            }
+            return latestScreenCaptures.first(where: { $0.isCursorScreen })
+        }()
+        guard let targetScreenCapture else {
+            print("🎯 Element pointing: no screenshot to map screen \(screenIndex) onto")
+            return
+        }
+
+        // The agent's coordinates are in the screenshot's pixel space
+        // (top-left origin, e.g. 1280x831). Scale to the display's point
+        // space (e.g. 1512x982), then convert to AppKit global coords.
+        let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
+        let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
+        let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
+        let displayFrame = targetScreenCapture.displayFrame
+
+        // Clamp to screenshot coordinate space (the sidecar clamps too)
+        let clampedX = max(0, min(CGFloat(screenshotX), screenshotWidth))
+        let clampedY = max(0, min(CGFloat(screenshotY), screenshotHeight))
+
+        // Scale from screenshot pixels to display points
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+
+        // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
+        let appKitY = displayHeight - displayLocalY
+
+        // Convert display-local coords to global screen coords
+        let globalLocation = CGPoint(
+            x: displayLocalX + displayFrame.origin.x,
+            y: appKitY + displayFrame.origin.y
+        )
+
+        // The spinner hides the triangle, so leave the processing state
+        // before the flight or the animation is invisible.
+        if voiceState == .processing {
+            voiceState = .responding
+        }
+
+        detectedElementBubbleText = label
+        detectedElementDisplayFrame = displayFrame
+        detectedElementScreenLocation = globalLocation
+        ClickyAnalytics.trackElementPointed(elementLabel: label)
+        print("🎯 Element pointing: (\(Int(screenshotX)), \(Int(screenshotY))) screen \(screenIndex) → \"\(label)\"")
     }
 
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),
@@ -735,7 +1037,7 @@ final class CompanionManager: ObservableObject {
         transientHideTask?.cancel()
         transientHideTask = Task {
             // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            while isAnySpeechPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -755,14 +1057,33 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
+    /// Says out loud that a voice turn failed, so a broken sidecar is never silent.
+    /// The detail goes to the Xcode console.
+    private func speakAgentErrorFallback(spokenExplanation: String) {
+        stopAllSpeechImmediately()
+        systemSpeechSentenceQueue.enqueueSentence(spokenExplanation)
+    }
+
+    // MARK: - Speech Output
+
+    /// Answers go to the Spark voice when configured, otherwise the macOS voice.
+    private func enqueueAssistantSentenceForSpeech(_ sentenceText: String) {
+        if let sparkSpeechSentenceQueue {
+            sparkSpeechSentenceQueue.enqueueSentence(sentenceText)
+        } else {
+            systemSpeechSentenceQueue.enqueueSentence(sentenceText)
+        }
+    }
+
+    private func stopAllSpeechImmediately() {
+        sparkSpeechSentenceQueue?.stopImmediately()
+        systemSpeechSentenceQueue.stopImmediately()
+    }
+
+    /// True while either voice is generating or playing, so the transient
+    /// overlay stays up until the last word is heard.
+    private var isAnySpeechPlaying: Bool {
+        (sparkSpeechSentenceQueue?.isSpeaking ?? false) || systemSpeechSentenceQueue.isSpeaking
     }
 
     // MARK: - Point Tag Parsing
