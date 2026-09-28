@@ -17,7 +17,9 @@
 //  Configuration: the server's base URL comes from the `SparkSpeechBaseURL`
 //  user default (kept out of the repo because it names Ken's machine), e.g.
 //    defaults write com.yourcompany.leanring-buddy SparkSpeechBaseURL http://<spark>.local:8880
-//  `SparkSpeechVoice` picks the voice (default "warm").
+//  `SparkSpeechModel` and `SparkSpeechVoice` pick what the server runs:
+//  "miso-tts-8b" / "warm" (defaults) for spark-tts-server/, or "kokoro" /
+//  e.g. "af_heart" for Kokoro-FastAPI. Both servers speak the same shape.
 //
 
 import AVFoundation
@@ -45,10 +47,14 @@ final class SparkSpeechSentenceQueue {
     /// later sentence can wait behind earlier ones for well over a minute.
     private static let requestTimeoutSeconds: TimeInterval = 240
 
+    let modelName: String
     let voiceName: String
-    /// Called with the sentence text when the server could not voice it, so the
-    /// caller can fall back to the macOS voice rather than drop the words.
-    var sentenceFailureHandler: ((String) -> Void)?
+    /// Called with the sentence text (and its index, if any) when the server could
+    /// not voice it, so the caller can fall back to the macOS voice rather than drop the words.
+    var sentenceFailureHandler: ((String, Int?) -> Void)?
+    /// Called with a sentence's index when its audio starts playing, and with nil
+    /// when playback runs out of audio (the voice is behind), for the transcript panel.
+    var sentencePlaybackChangeHandler: ((Int?) -> Void)?
 
     private let speechEndpointURL: URL
     private let urlSession: URLSession
@@ -64,10 +70,12 @@ final class SparkSpeechSentenceQueue {
     /// Bumped by every stop; responses and completions from an older value are stale and dropped.
     private var playbackGeneration = 0
     /// Sentences waiting for their turn at the server, oldest first.
-    private var sentenceTextsWaitingToBeRequested: [String] = []
+    private var sentencesWaitingToBeRequested: [(text: String, sentenceIndex: Int?)] = []
     /// The one request in flight, if any.
     private var currentSpeechRequestTask: Task<Void, Never>?
-    private var scheduledButUnplayedBufferCount = 0
+    /// One entry per buffer handed to the player node and not yet played; the
+    /// first is the one playing now.
+    private var sentenceIndexesScheduledForPlayback: [Int?] = []
 
     /// Nil when no voice server is configured; the caller then uses the macOS voice.
     static func makeIfConfigured() -> SparkSpeechSentenceQueue? {
@@ -78,12 +86,14 @@ final class SparkSpeechSentenceQueue {
               baseURL.scheme != nil else {
             return nil
         }
+        let modelName = UserDefaults.standard.string(forKey: "SparkSpeechModel") ?? "miso-tts-8b"
         let voiceName = UserDefaults.standard.string(forKey: "SparkSpeechVoice") ?? "warm"
-        return SparkSpeechSentenceQueue(baseURL: baseURL, voiceName: voiceName)
+        return SparkSpeechSentenceQueue(baseURL: baseURL, modelName: modelName, voiceName: voiceName)
     }
 
-    private init(baseURL: URL, voiceName: String) {
+    private init(baseURL: URL, modelName: String, voiceName: String) {
         self.speechEndpointURL = baseURL.appendingPathComponent("v1/audio/speech")
+        self.modelName = modelName
         self.voiceName = voiceName
 
         let sessionConfiguration = URLSessionConfiguration.default
@@ -100,14 +110,14 @@ final class SparkSpeechSentenceQueue {
     /// True while any sentence is being generated, waiting its turn, or playing.
     var isSpeaking: Bool {
         currentSpeechRequestTask != nil
-            || !sentenceTextsWaitingToBeRequested.isEmpty
-            || scheduledButUnplayedBufferCount > 0
+            || !sentencesWaitingToBeRequested.isEmpty
+            || !sentenceIndexesScheduledForPlayback.isEmpty
     }
 
-    func enqueueSentence(_ sentenceText: String) {
+    func enqueueSentence(_ sentenceText: String, sentenceIndex: Int? = nil) {
         let trimmedSentenceText = sentenceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSentenceText.isEmpty else { return }
-        sentenceTextsWaitingToBeRequested.append(trimmedSentenceText)
+        sentencesWaitingToBeRequested.append((text: trimmedSentenceText, sentenceIndex: sentenceIndex))
         requestNextSentenceIfIdle()
     }
 
@@ -117,16 +127,16 @@ final class SparkSpeechSentenceQueue {
         playbackGeneration += 1
         currentSpeechRequestTask?.cancel()
         currentSpeechRequestTask = nil
-        sentenceTextsWaitingToBeRequested.removeAll()
-        scheduledButUnplayedBufferCount = 0
+        sentencesWaitingToBeRequested.removeAll()
+        sentenceIndexesScheduledForPlayback.removeAll()
         playerNode.stop()
     }
 
     // MARK: - Requests, one at a time
 
     private func requestNextSentenceIfIdle() {
-        guard currentSpeechRequestTask == nil, !sentenceTextsWaitingToBeRequested.isEmpty else { return }
-        let sentenceText = sentenceTextsWaitingToBeRequested.removeFirst()
+        guard currentSpeechRequestTask == nil, !sentencesWaitingToBeRequested.isEmpty else { return }
+        let (sentenceText, sentenceIndex) = sentencesWaitingToBeRequested.removeFirst()
         let playbackGenerationAtRequest = playbackGeneration
 
         currentSpeechRequestTask = Task {
@@ -137,13 +147,13 @@ final class SparkSpeechSentenceQueue {
                 // A stop cancels this task; that is not a failure to report.
                 guard !Task.isCancelled, playbackGeneration == playbackGenerationAtRequest else { return }
                 print("⚠️ Spark voice failed: \(error.localizedDescription)")
-                sentenceFailureHandler?(sentenceText)
+                sentenceFailureHandler?(sentenceText, sentenceIndex)
             }
 
             guard playbackGeneration == playbackGenerationAtRequest else { return }
             currentSpeechRequestTask = nil
             if let sentenceBuffer {
-                schedule(sentenceBuffer)
+                schedule(sentenceBuffer, sentenceIndex: sentenceIndex)
             }
             // Start the next sentence now, while this one plays.
             requestNextSentenceIfIdle()
@@ -152,19 +162,31 @@ final class SparkSpeechSentenceQueue {
 
     // MARK: - Playback
 
-    private func schedule(_ sentenceBuffer: AVAudioPCMBuffer) {
+    private func schedule(_ sentenceBuffer: AVAudioPCMBuffer, sentenceIndex: Int?) {
         guard startAudioEngineIfNeeded() else { return }
-        scheduledButUnplayedBufferCount += 1
+        let startsPlayingNow = sentenceIndexesScheduledForPlayback.isEmpty
+        sentenceIndexesScheduledForPlayback.append(sentenceIndex)
         let playbackGenerationAtSchedule = playbackGeneration
         playerNode.scheduleBuffer(sentenceBuffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             // Called on an audio thread, and also for buffers dropped by stop().
             Task { @MainActor [weak self] in
                 guard let self, self.playbackGeneration == playbackGenerationAtSchedule else { return }
-                self.scheduledButUnplayedBufferCount = max(0, self.scheduledButUnplayedBufferCount - 1)
+                if !self.sentenceIndexesScheduledForPlayback.isEmpty {
+                    self.sentenceIndexesScheduledForPlayback.removeFirst()
+                }
+                // Buffers play back to back, so the next one is already playing.
+                if self.sentenceIndexesScheduledForPlayback.isEmpty {
+                    self.sentencePlaybackChangeHandler?(nil)
+                } else if let nextSentenceIndex = self.sentenceIndexesScheduledForPlayback.first ?? nil {
+                    self.sentencePlaybackChangeHandler?(nextSentenceIndex)
+                }
             }
         }
         if !playerNode.isPlaying {
             playerNode.play()
+        }
+        if startsPlayingNow, let sentenceIndex {
+            sentencePlaybackChangeHandler?(sentenceIndex)
         }
     }
 
@@ -188,10 +210,13 @@ final class SparkSpeechSentenceQueue {
         speechRequest.httpMethod = "POST"
         speechRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         speechRequest.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": "miso-tts-8b",
+            "model": modelName,
             "input": sentenceText,
             "voice": voiceName,
-            "response_format": "pcm"
+            "response_format": "pcm",
+            // Kokoro-FastAPI streams by default; one whole body per sentence keeps
+            // this the same as Miso. Kokoro is fast enough that it costs little.
+            "stream": false
         ])
 
         let requestStartedAt = Date()

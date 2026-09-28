@@ -15,14 +15,16 @@
 Branch `feature/agent-sidecar-prototype`. Chunk 4, the Spark voice, spark-tts-server/ and docs are
 committed (Ken's pbxproj signing-team change is deliberately left unstaged; the project uses
 file-system synchronized groups, so new Swift files need no pbxproj edit).
-**Where the voice is:** answers are spoken by Miso TTS 8B on the Spark (Ken chose it over Kokoro despite
+**Voice switched to Kokoro (2026-09-28, Ken):** Kokoro-FastAPI container on the Spark, RTF ~0.1; Miso stopped. Details in the tech-scout. Before that, answers were spoken by Miso TTS 8B on the Spark (Ken chose it over Kokoro despite
 RTF 2.8; see `.claude/plans/backlog/spark-tts-server/tech-scout.md`). Server: `spark-tts-server/`,
 running on the Spark from `~/clicky-voice` via `run_on_spark.sh` (manual start, not on boot). App:
 `SparkSpeechSentenceQueue.swift`, enabled by the `SparkSpeechBaseURL` user default (already set on Ken's Mac).
 **Ken's run (2026-09-28) confirmed** in-order playback. Lag is Miso itself: ~15–20 s to first speech,
 ~14 s gaps, server busy back to back. **In progress: transcript panel** — pinned top right, transparent,
 same look as the existing UI, full answer streams in while the voice reads along (current sentence
-highlighted). Voice reads everything for now; "speak a short version only" is Ken's open choice.
+highlighted). **Built, typechecked, NOT committed — waiting on Ken's Xcode run:** `CompanionTranscriptPanel.swift`
+(replaces the unused `CompanionResponseOverlay.swift`); both speech queues report the playing sentence.
+Voice reads everything for now; "speak a short version only" is Ken's open choice.
 **Next, in Ken's order:** transcript panel → persona/voice polish if needed → later, Miso speed
 (CUDA graph for the 31-pass decoder, int8/int4, streaming) → then chunks 5, 6, 8, 9 and Spark STT (1).
 **To resume:** 1) read this whole file; 2) read `brief.md` and `docs/conventions.md`; 3) do the next ☐
@@ -88,6 +90,8 @@ Legend: ☐ todo · ◐ in progress · ☑ done · ⏸ blocked · ⊘ deferred. 
 - 2026-09-27 — Chunk 2 ☑ (reshaped by tech-scout): Miso TTS 8B served on the Spark, 221 ms/80 ms frame. Chunk 7 ◐: SparkSpeechSentenceQueue, in-order playback, cancel frees GPU.
 - 2026-09-28 — Chunk 7 ◐: Spark requests serialized (out-of-order generation stalled playback); short-sentence merge; conversational persona. 50 tests.
 - 2026-09-28 — Chunk 7 ◐: Ken's run plays every sentence in order; gaps ~14 s are Miso RTF 2.8 (server never idle), not the app.
+- 2026-09-28 — Transcript panel built (top right, frosted, read-along highlight); typechecked; awaiting Ken's Xcode run.
+- 2026-09-28 — Voice switched to Kokoro on the Spark (0.5 s per sentence); `SparkSpeechModel` user default added. Awaiting Ken's Xcode run.
 - 2026-09-27 — Ken's workflow integrated: this plan and `brief.md`; `.claude/plans` un-ignored; AGENTS.md follows the project template.
 
 ### Produced values (runtime handoffs)
@@ -165,7 +169,7 @@ See `brief.md`. Build-now: chunks 0–9. Deferred: wake word, computer use, loca
 
 ### Chunk 5 — Circle gesture in the overlay
 - **Goal:** `overlay.circle_region` draws a circle around the region on the right display.
-- **Read first:** `leanring-buddy/OverlayWindow.swift` (bezier flight, multi-monitor mapping); `leanring-buddy/CompanionResponseOverlay.swift`.
+- **Read first:** `leanring-buddy/OverlayWindow.swift` (bezier flight, multi-monitor mapping); `leanring-buddy/CompanionTranscriptPanel.swift` (overlay panel pattern).
 - **Steps:** new SwiftUI shape driven by a published `detectedRegion` on `CompanionManager`; reuse the point scaling for the rectangle's corners; fade with the existing transient-hide logic.
 - **Verify:** ask "circle the save button"; the circle lands on it, on a secondary monitor too.
 
@@ -217,7 +221,7 @@ See `brief.md`. Build-now: chunks 0–9. Deferred: wake word, computer use, loca
 
 ## Reference index
 - Files touched so far: `agent-sidecar/**`, `docs/**`, `AGENTS.md`, `.gitignore`, `.claude/**`.
-- Swift files chunk 4+ will touch: `CompanionManager.swift`, `ClaudeAPI.swift` (delete), `OverlayWindow.swift`, `CompanionResponseOverlay.swift`, `CompanionPanelView.swift`, `ElevenLabsTTSClient.swift`, `Info.plist`, `project.pbxproj` (adding files only).
+- Swift files chunk 4+ will touch: `CompanionManager.swift`, `ClaudeAPI.swift` (delete), `OverlayWindow.swift`, `CompanionTranscriptPanel.swift` (replaced the unused `CompanionResponseOverlay.swift`), `CompanionPanelView.swift`, `ElevenLabsTTSClient.swift`, `Info.plist`, `project.pbxproj` (adding files only).
 - Primitives to reuse: `CompanionScreenCaptureUtility.captureAllScreensAsJPEG`; `BuddyPCM16AudioConverter`; `BuddyWAVFileBuilder`; `parsePointingCoordinates` scaling block; `AsyncPushQueue`, `PendingReplyRegistry`, `SentenceStreamSplitter`, `createOutgoingMessage`.
 - Deps available: `@anthropic-ai/claude-agent-sdk` 0.3.283, `zod` 4.6.5, `ws` 8.18, Node 24; Swift: ScreenCaptureKit, AVFoundation, Sparkle 2.9, PostHog 3.47.
 ### Post-exploration refinements (confirmed APIs)

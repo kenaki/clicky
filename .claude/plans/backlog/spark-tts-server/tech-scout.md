@@ -188,6 +188,13 @@ sentence at a time (next request as soon as the previous audio arrives); the sid
 Open: Miso speed (levers above), start the server on boot (Docker Compose was the plan; it runs from the
 spike venv today), and whether to raise quality with a longer or better voice reference.
 
+## Kokoro on the Spark (2026-09-28, Ken: switch to Kokoro to try it; Miso stopped, kept on disk)
+Kokoro-FastAPI `v0.9.0-cu129-arm64` in Docker (`clicky-kokoro`, `--gpus all`, port 8880 on the LAN IP, no
+restart policy). Runs on cuda (sm_121 capability warning is harmless); 0.9 GB GPU memory; warm-up 3.6 s.
+Measured from the Mac, warm, `stream: false`, pcm: 6.2 s audio in 0.47 s, 4.1 s in 0.73 s, 0.8 s in 0.33 s
+(RTF ~0.08–0.18). App: `SparkSpeechModel` = `kokoro`, `SparkSpeechVoice` = `af_heart` (user defaults).
+Ken likes the voices. Back to Miso: `docker stop clicky-kokoro`, `run_on_spark.sh`, delete both defaults.
+
 ## Handoff → frame-goal
 Tech direction is chosen, with one spike deciding the model. Next: run `frame-goal` on `spark-tts-server`.
 It will read this landscape as the chosen tech direction and frame the goal/architecture around it; then

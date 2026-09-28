@@ -65,8 +65,11 @@ final class CompanionManager: ObservableObject {
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
-    // Response text is now displayed inline on the cursor overlay via
-    // streamingResponseText, so no separate response overlay manager is needed.
+    /// The current voice turn as text, pinned top right, so the answer can be
+    /// read ahead of the voice.
+    let transcriptPanelManager = CompanionTranscriptPanelManager()
+    /// Fades the transcript panel a few seconds after the last word is spoken.
+    private var transcriptPanelHideTask: Task<Void, Never>?
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
@@ -88,13 +91,22 @@ final class CompanionManager: ObservableObject {
     private let sidecarProcessController = SidecarProcessController()
     /// Built-in macOS voice: speaks answers when no Spark voice server is configured,
     /// and always speaks error fallbacks, which must work even when the Spark is down.
-    private let systemSpeechSentenceQueue = SystemSpeechSentenceQueue()
+    private lazy var systemSpeechSentenceQueue: SystemSpeechSentenceQueue = {
+        let systemSpeechSentenceQueue = SystemSpeechSentenceQueue()
+        systemSpeechSentenceQueue.sentencePlaybackChangeHandler = { [weak self] speakingSentenceIndex in
+            self?.transcriptPanelManager.updateSpeakingSentence(sentenceIndex: speakingSentenceIndex)
+        }
+        return systemSpeechSentenceQueue
+    }()
     /// Miso on the Spark (spark-tts-server/), when `SparkSpeechBaseURL` is set.
     private lazy var sparkSpeechSentenceQueue: SparkSpeechSentenceQueue? = {
         let sparkSpeechSentenceQueue = SparkSpeechSentenceQueue.makeIfConfigured()
-        sparkSpeechSentenceQueue?.sentenceFailureHandler = { [weak self] failedSentenceText in
+        sparkSpeechSentenceQueue?.sentenceFailureHandler = { [weak self] failedSentenceText, sentenceIndex in
             // Say the words in the backup voice rather than drop them.
-            self?.systemSpeechSentenceQueue.enqueueSentence(failedSentenceText)
+            self?.systemSpeechSentenceQueue.enqueueSentence(failedSentenceText, sentenceIndex: sentenceIndex)
+        }
+        sparkSpeechSentenceQueue?.sentencePlaybackChangeHandler = { [weak self] speakingSentenceIndex in
+            self?.transcriptPanelManager.updateSpeakingSentence(sentenceIndex: speakingSentenceIndex)
         }
         return sparkSpeechSentenceQueue
     }()
@@ -112,7 +124,7 @@ final class CompanionManager: ObservableObject {
     /// Which voice speaks answers, for the panel.
     var speechVoiceStatusText: String {
         if let sparkSpeechSentenceQueue {
-            return "Miso on Spark (\(sparkSpeechSentenceQueue.voiceName))"
+            return "\(sparkSpeechSentenceQueue.modelName) on Spark (\(sparkSpeechSentenceQueue.voiceName))"
         }
         return "macOS voice"
     }
@@ -558,6 +570,8 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             stopAllSpeechImmediately()
             clearDetectedElementLocation()
+            transcriptPanelHideTask?.cancel()
+            transcriptPanelManager.fadeOutAndHide()
             // A sidecar turn holds .responding while it speaks; release it so
             // the listening waveform can take over.
             if voiceState == .responding {
@@ -654,6 +668,8 @@ final class CompanionManager: ObservableObject {
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         stopAllSpeechImmediately()
+        transcriptPanelHideTask?.cancel()
+        transcriptPanelManager.beginTurn(userTranscript: transcript)
 
         currentResponseTask = Task {
             // Spinner until the first sentence or pointing arrives
@@ -695,6 +711,8 @@ final class CompanionManager: ObservableObject {
             if !Task.isCancelled {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
+                transcriptPanelManager.markAnswerComplete()
+                scheduleTranscriptPanelHideAfterSpeech()
             }
         }
     }
@@ -842,12 +860,16 @@ final class CompanionManager: ObservableObject {
         case .assistantSentence(let sentencePayload):
             // Sentences from an interrupted turn can still be in flight; drop them.
             guard sentencePayload.utteranceId == currentAgentUtteranceId else { return }
-            enqueueAssistantSentenceForSpeech(sentencePayload.text)
+            transcriptPanelManager.appendSentence(sentenceIndex: sentencePayload.sentenceIndex, text: sentencePayload.text)
+            enqueueAssistantSentenceForSpeech(sentencePayload.text, sentenceIndex: sentencePayload.sentenceIndex)
             voiceState = .responding
 
         case .assistantTurnComplete(let turnCompletePayload):
             // The sentences were already spoken; spokenText is for the record only.
             ClickyAnalytics.trackAIResponseReceived(response: turnCompletePayload.spokenText)
+            if turnCompletePayload.utteranceId == currentAgentUtteranceId {
+                transcriptPanelManager.markAnswerComplete()
+            }
             finishAgentTurn(utteranceId: turnCompletePayload.utteranceId)
 
         case .overlayPointAt(let pointAtPayload):
@@ -1057,6 +1079,23 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Keeps the transcript panel up until the voice has said everything, then
+    /// fades it after a pause long enough to finish reading. A new push-to-talk
+    /// press or utterance cancels this.
+    private func scheduleTranscriptPanelHideAfterSpeech() {
+        transcriptPanelHideTask?.cancel()
+        transcriptPanelHideTask = Task {
+            while isAnySpeechPlaying {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            transcriptPanelManager.markSpeechFinished()
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            transcriptPanelManager.fadeOutAndHide()
+        }
+    }
+
     /// Says out loud that a voice turn failed, so a broken sidecar is never silent.
     /// The detail goes to the Xcode console.
     private func speakAgentErrorFallback(spokenExplanation: String) {
@@ -1067,11 +1106,11 @@ final class CompanionManager: ObservableObject {
     // MARK: - Speech Output
 
     /// Answers go to the Spark voice when configured, otherwise the macOS voice.
-    private func enqueueAssistantSentenceForSpeech(_ sentenceText: String) {
+    private func enqueueAssistantSentenceForSpeech(_ sentenceText: String, sentenceIndex: Int) {
         if let sparkSpeechSentenceQueue {
-            sparkSpeechSentenceQueue.enqueueSentence(sentenceText)
+            sparkSpeechSentenceQueue.enqueueSentence(sentenceText, sentenceIndex: sentenceIndex)
         } else {
-            systemSpeechSentenceQueue.enqueueSentence(sentenceText)
+            systemSpeechSentenceQueue.enqueueSentence(sentenceText, sentenceIndex: sentenceIndex)
         }
     }
 
